@@ -42,8 +42,15 @@ func TestHookPostEditBlastRadiusIsNotRepeated(t *testing.T) {
 	if got := edit(""); !strings.Contains(got, "blast radius for lib.go") || !strings.Contains(got, "Run") {
 		t.Fatalf("handleHookPostEdit(first edit) = %q, want the blast radius naming Run", got)
 	}
+	charged := readHookSession(root, "default").InjectedTokens
+	if charged == 0 {
+		t.Error("injectedTokens after the first blast radius = 0, want it charged")
+	}
 	if got := edit(""); got != "" {
 		t.Errorf("handleHookPostEdit(repeat edit, same dependents) = %q, want nothing", got)
+	}
+	if got := readHookSession(root, "default").InjectedTokens; got != charged {
+		t.Errorf("injectedTokens after a suppressed blast radius = %d, want %d unchanged", got, charged)
 	}
 	if got := edit("subagent-1"); !strings.Contains(got, "blast radius for lib.go") {
 		t.Errorf("handleHookPostEdit(another agent context) = %q, want the blast radius", got)

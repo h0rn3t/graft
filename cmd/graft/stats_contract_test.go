@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStatsContract(t *testing.T) {
@@ -46,5 +47,66 @@ func TestStatsContract(t *testing.T) {
 	stdout.Reset()
 	if got := run([]string{"stats", root, "--json"}, &stdout, &stderr); got != 0 || !strings.Contains(stdout.String(), `"id": "recent"`) {
 		t.Errorf("run(stats %q --json) = (%d, %q, %q), want session JSON", root, got, stdout.String(), stderr.String())
+	}
+}
+
+func TestGroupedNumber(t *testing.T) {
+	for _, tc := range []struct {
+		value float64
+		want  string
+	}{
+		{0, "0"},
+		{146, "146"},
+		{12345, "12,345"},
+		{1234567, "1,234,567"},
+		{-146, "-146"},
+		{-1234567, "-1,234,567"},
+		{-0.4, "0"},
+	} {
+		if got := groupedNumber(tc.value); got != tc.want {
+			t.Errorf("groupedNumber(%v) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestStatsReportsNetAndPush(t *testing.T) {
+	t.Setenv("GRAFT_DIR", "")
+	root := t.TempDir()
+	writeFixtureFile(t, root, "graft/.cache/session/s1.json", `{"perAgentQuery":{},"graftReads":1,"sourceReads":1,"savedTokens":10000,"injectedTokens":2500}`)
+	stats := func(args ...string) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if got := run(append([]string{"stats", root}, args...), &stdout, &stderr); got != 0 {
+			t.Fatalf("run(stats %v) = %d, stderr %q; want 0", args, got, stderr.String())
+		}
+		return stdout.String()
+	}
+	for _, want := range []string{"tokens saved:  ~10,000", "injected:      ~2,500", "net saved:     ~7,500", "prompt push:   on (support 0)"} {
+		if got := stats(); !strings.Contains(got, want) {
+			t.Errorf("stats() = %q, want %q", got, want)
+		}
+	}
+
+	recordPushOutcome(root, hookHostClaude, "bad1", 0, 1)
+	recordPushOutcome(root, hookHostClaude, "bad2", 0, 1)
+	if got, want := stats(), "prompt push:   off (support -1.8, re-audit in 5 new sessions)"; !strings.Contains(got, want) {
+		t.Errorf("stats(negative support) = %q, want %q", got, want)
+	}
+	if got, want := stats("--json"), `"push": {
+    "state": "off",
+    "support": -1.8,
+    "untilReaudit": 5
+  }`; !strings.Contains(got, want) || !strings.Contains(got, `"injectedTokens": 2500`) {
+		t.Errorf("stats(--json, negative support) = %q, want injectedTokens and %q", got, want)
+	}
+
+	codex := filepath.Join(root, "graft", ".cache", "session", "codex.json")
+	writeFixtureFile(t, root, "graft/.cache/session/codex.json", `{"perAgentQuery":{},"host":"codex"}`)
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(codex, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stats(), "prompt push:   on (support 0)"; !strings.Contains(got, "session codex") || !strings.Contains(got, want) {
+		t.Errorf("stats(latest session is codex) = %q, want the codex ledger: %q", got, want)
 	}
 }

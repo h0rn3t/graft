@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -62,6 +63,12 @@ func runStats(opts callersOptions, stdout, stderr io.Writer) int {
 			value, _ := spread.Get(key)
 			merged.Set(key, value)
 		}
+		state, support, untilReaudit := statsPushState(root, statsSessionHost(values), id)
+		push := jsonjs.NewObject()
+		push.Set("state", state)
+		push.Set("support", support)
+		push.Set("untilReaudit", float64(untilReaudit))
+		merged.Set("push", push)
 		if _, err := fmt.Fprintln(stdout, jsonjs.Stringify(merged, 2)); err != nil {
 			return 1
 		}
@@ -72,7 +79,7 @@ func runStats(opts callersOptions, stdout, stderr io.Writer) int {
 		_ = json.Unmarshal(values[key], &value)
 		return value
 	}
-	graft, source, saved := readNumber("graftReads"), readNumber("sourceReads"), readNumber("savedTokens")
+	graft, source, saved, injected := readNumber("graftReads"), readNumber("sourceReads"), readNumber("savedTokens"), readNumber("injectedTokens")
 	mix := "no retrieval yet"
 	if total := graft + source; total != 0 {
 		mix = fmt.Sprintf("%.0f%% graft", math.Round(graft/total*100))
@@ -83,9 +90,18 @@ func runStats(opts callersOptions, stdout, stderr io.Writer) int {
 		fmt.Sprintf("  source reads:  %g   (Read / Grep / Glob)", source),
 		"  mix:           " + mix,
 		"  tokens saved:  ~" + groupedNumber(saved),
+		"  injected:      ~" + groupedNumber(injected) + "   (context graft's hooks added)",
+		"  net saved:     ~" + groupedNumber(saved-injected),
 	}
-	if usd, ok := savings.DollarsSaved(saved, readNumber("inputCostMicros"), readNumber("inputTokensBilled")); ok {
+	if usd, ok := savings.DollarsSaved(saved-injected, readNumber("inputCostMicros"), readNumber("inputTokensBilled")); ok && saved > injected {
 		lines = append(lines, "  value saved:   ~"+savings.FormatDollars(usd))
+	}
+	state, support, untilReaudit := statsPushState(root, statsSessionHost(values), id)
+	switch state {
+	case "off":
+		lines = append(lines, fmt.Sprintf("  prompt push:   off (support %s, re-audit in %d new sessions)", jsonjs.FormatNumber(support), untilReaudit))
+	default:
+		lines = append(lines, fmt.Sprintf("  prompt push:   %s (support %s)", state, jsonjs.FormatNumber(support)))
 	}
 	var lastQuery string
 	if json.Unmarshal(values["lastQuery"], &lastQuery) == nil && lastQuery != "" {
@@ -97,13 +113,43 @@ func runStats(opts callersOptions, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// statsSessionHost is the agent host a session recorded, Claude Code when it
+// recorded none.
+func statsSessionHost(values map[string]json.RawMessage) string {
+	var host string
+	if json.Unmarshal(values["host"], &host) != nil || host == "" {
+		return hookHostClaude
+	}
+	return host
+}
+
+// statsPushState reports whether prompt retrieval is pushed for session id:
+// "on", "off", or "re-audit" for a session pushed while support is negative,
+// with the support rounded for display and, when off, the new sessions left
+// until the next re-audit.
+func statsPushState(root, host, id string) (state string, support float64, untilReaudit int) {
+	ledger := readPushLedger(root, host)
+	support = math.Round(ledger.support()*1000) / 1000
+	switch {
+	case ledger.support() >= 0:
+		return "on", support, 0
+	case slices.Contains(ledger.Audit, id):
+		return "re-audit", support, 0
+	default:
+		return "off", support, ledger.sessionsUntilReaudit()
+	}
+}
+
 // emptySessionJSON is the state of a session nothing has been recorded for.
 const emptySessionJSON = `{"lastQuery":null,"perAgentQuery":{},"graftReads":0,"sourceReads":0,"savedTokens":0,"injectedPointers":[],"nudges":0}`
 
 func groupedNumber(value float64) string {
-	plain := strconv.FormatFloat(value, 'f', 0, 64)
+	plain := strconv.FormatFloat(math.Abs(value), 'f', 0, 64)
 	for i := len(plain) - 3; i > 0; i -= 3 {
 		plain = plain[:i] + "," + plain[i:]
+	}
+	if value <= -0.5 {
+		return "-" + plain
 	}
 	return plain
 }

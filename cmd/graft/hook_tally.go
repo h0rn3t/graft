@@ -194,7 +194,11 @@ func countHookTranscriptTools(root, id, path string) {
 				name, _ := use["name"].(string)
 				input, _ := use["input"].(map[string]any)
 				command, _ := input["command"].(string)
-				switch classifyHookToolUse(name, command) {
+				kind := classifyHookToolUse(name, command)
+				if len(session.PendingRetrievals) > 0 {
+					markHookRetrievalTouches(session, kind == hookToolGraft, input)
+				}
+				switch kind {
 				case hookToolGraft:
 					session.GraftReads++
 					session.TurnUsedGraft = new(true)

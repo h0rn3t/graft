@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +94,28 @@ func TestHookSessionStateContract(t *testing.T) {
 	}
 	if got := listHookSessionIDs(root); !slices.Equal(got, []string{"abc"}) {
 		t.Errorf("listHookSessionIDs(%q) with non-JSON file = %v, want [abc]", root, got)
+	}
+}
+
+func TestHookSessionStateReadsOlderLayout(t *testing.T) {
+	root := t.TempDir()
+	older := `{"lastQuery":null,"perAgentQuery":{},"graftReads":1,"sourceReads":0,"savedTokens":900,"injectedPointers":[],"nudges":0}`
+	writeFixtureFile(t, root, "graft/.cache/session/old.json", older)
+	session := readHookSession(root, "old")
+	if session.InjectedTokens != 0 || session.PendingRetrievals != nil || session.netSavedTokens() != 900 {
+		t.Errorf("readHookSession(older layout) = injected %d, pending %v, net %d; want 0, none, 900", session.InjectedTokens, session.PendingRetrievals, session.netSavedTokens())
+	}
+	if err := writeHookSession(root, "old", session); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(hookSessionPath(root, "old"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"injectedTokens", "pendingRetrievals", "retrievalsConfirmed"} {
+		if strings.Contains(string(data), field) {
+			t.Errorf("rewritten older session = %s, want no %q", data, field)
+		}
 	}
 }
 

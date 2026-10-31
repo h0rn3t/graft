@@ -176,6 +176,8 @@ The harness ran three variants of the same Claude Sonnet 5 agent with the same f
 
 Graft never answered worse than cold, on any corpus. The pull variant gave up most of that speed for something bigger: correctness jumped to 98%, +5 points over cold, the strongest single result in the sweep. Push when speed is what you need; pull when being right matters more.
 
+Graft now decides per repository whether to keep pushing prompt context (see adaptive prompt context below), so a benchmark that reuses a `graft/` directory across arms should delete `graft/.cache/push-ledger-*.json` between them; otherwise one arm inherits the other's decision.
+
 ---
 
 ## SWE-bench Verified
@@ -394,11 +396,12 @@ Codex gets four hooks in `~/.codex/hooks.json`: session-start orientation, promp
 
 `graft init` always wires up Claude Code, and Claude Code gets more than the skill file above. From then on, any Claude Code session opened in the repo gets:
 
-- **a live statusline** — graph size, freshness (`✓ synced`, `syncing…`, `⚠ N stale` when the code has moved ahead of the graph), the tokens graft saved this session with their estimated dollar value, context usage, and the last edited file; in a folder of repos also the repo count, the size of the repo you edit, and the repos not built yet. A subagent's statusline shows its last graft query
+- **a live statusline** — graph size, freshness (`✓ synced`, `syncing…`, `⚠ N stale` when the code has moved ahead of the graph), the tokens graft saved this session net of what its own hooks added to the context, with their estimated dollar value (the segment disappears when graft added more than it saved), context usage, and the last edited file; in a folder of repos also the repo count, the size of the repo you edit, and the repos not built yet. A subagent's statusline shows its last graft query
 - **auto-sync** — every graft query brings the graph up to date first, so an answer always describes the code as it is right now, uncommitted edits included. A query refreshes only what it reads; the markdown under `graft/` is refreshed by the background rebuild at the end of a turn that touched code. Both are structural and `$0` — auto-sync never calls the LLM on its own
 - **context on tap** — a prompt that names code gets up to three matching nodes: the top one inlined when it is a strong match, the rest as pointers. A prompt gets them only when it shares a word of three or more letters with the top hit's name and the match is not weak; a node already sent to that agent is not sent again, a monorepo answer narrows to the sub-project of the last edited file, the note stays under 9,000 characters, and task notifications and agent messages get none. Editing a file surfaces what depends on it ("blast radius"). New sessions, on startup, resume and after compaction, start with the repo map, or, when Claude Code runs graft's MCP server, with one line pointing at its tools, which the server's own instructions already describe; a session that starts after a branch switch left indexed files missing also gets a stale warning. Subagents start with the same note, since Claude Code gives them no session-start context and an Explore subagent no CLAUDE.md
 - **a search nudge** — once per session, after a Grep or a recursive `grep`, `git grep`, `rg`, `ag` or `ack` over indexed code, the hook names the equivalent `graft_find_all` call; searches of `graft/`, of paths outside the repo, or of piped output get no note
-- **token accounting** — every graft query records the tokens it saved (the size of the files it covered minus its answer); the hooks credit them to the session and price them from the session's billed input, and the statusline and `graft stats` show the result
+- **token accounting** — every graft query records the tokens it saved (the size of the files it covered minus its answer); the hooks credit them to the session and price them from the session's billed input, and the statusline and `graft stats` show the result. Everything the hooks inject themselves (the start-of-session map, prompt context, nudges, blast radii) is charged as a cost, so the saving shown is net. Prompt context counts as saved only once the turn's end shows the agent used it: it read, edited, or asked graft about an injected file or symbol, or named one in its reply
+- **adaptive prompt context** — per repository and agent, graft keeps `graft/.cache/push-ledger-<agent>.json` (`claude`, `codex`), so one agent's sessions never switch prompt context off for another: each session that received prompt context is scored as confirming (it was used) or contradicting (the agent looked elsewhere), newer sessions weighing more (decay 0.8). When the score turns negative, graft stops injecting prompt context in that repository; MCP tools and the CLI answer as before. Every fifth new session after that gets prompt context again as a re-audit, so the repository can earn it back. The file holds no prompts, code, or paths; delete it to reset the decision
 
 <p align="center">
   <img src="assets/graft-hooks-demo.gif" alt="How Claude Code hooks wire graft in: install, graft init, then the hooks loop (session start, user prompt, post tool use, stop) keeps the graph built, read, and fresh automatically" width="820"/>
@@ -526,9 +529,12 @@ closest symbol names (`did you mean …`) from `read`, `callers`, `path`, `show`
 ignored, so `ensure_fresh_graph` finds `EnsureFreshGraph`.
 
 `graft stats` shows the current session: graft reads against source reads
-(Read, Grep, Glob), the share of graft, the tokens saved and, once the session's
-billed input is known, their estimated value, plus the last query. `--json`
-prints the recorded session as is. The numbers are estimates, not a bill.
+(Read, Grep, Glob), the share of graft, the tokens saved, the tokens graft's
+hooks added, the net saving and, once the session's billed input is known, its
+estimated value, the repository's prompt-context state (`on`, `off` with the
+score and the new sessions until the next re-audit, or `re-audit`), plus the
+last query. `--json` prints the recorded session as is, with a `push` object.
+The numbers are estimates, not a bill.
 
 `ask` prefers production code over fixture, generated, and vendored copies —
 generated by its path or by its file's generated-code header;

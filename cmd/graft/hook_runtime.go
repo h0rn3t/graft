@@ -112,6 +112,30 @@ func hookSessionID(input hookInput) string {
 	return "default"
 }
 
+// hookContextClip cuts context to the hook output limit, as hosts receive it.
+func hookContextClip(context string) string {
+	const cut = "\n… (cut at the hook output limit)"
+	if savings.Length(context) > hookContextMaxChars {
+		return hookTruncateUTF16(context, hookContextMaxChars-savings.Length(cut)) + cut
+	}
+	return context
+}
+
+// hookContextTokens estimates what context costs the agent once emitted.
+func hookContextTokens(context string) int {
+	return savings.Tokens(savings.Length(hookContextClip(context)))
+}
+
+// emitChargedHookContext charges context to session id's injected tokens and
+// emits it. A peer holding the session lock costs the charge, not the output.
+func emitChargedHookContext(stdout io.Writer, root, id, event, context string) {
+	_ = updateHookSession(root, id, func(session *sessionState) bool {
+		session.InjectedTokens += hookContextTokens(context)
+		return true
+	})
+	emitHookContext(stdout, event, context)
+}
+
 func emitHookContext(stdout io.Writer, event, context string) {
 	payload := struct {
 		HookSpecificOutput struct {
@@ -119,12 +143,8 @@ func emitHookContext(stdout io.Writer, event, context string) {
 			AdditionalContext string `json:"additionalContext"`
 		} `json:"hookSpecificOutput"`
 	}{}
-	const cut = "\n… (cut at the hook output limit)"
-	if savings.Length(context) > hookContextMaxChars {
-		context = hookTruncateUTF16(context, hookContextMaxChars-savings.Length(cut)) + cut
-	}
 	payload.HookSpecificOutput.HookEventName = event
-	payload.HookSpecificOutput.AdditionalContext = context
+	payload.HookSpecificOutput.AdditionalContext = hookContextClip(context)
 	data, err := jsonv2.Marshal(payload, nil)
 	if err == nil {
 		_, _ = stdout.Write(data)
@@ -202,7 +222,7 @@ func handleHookPostEdit(ctx context.Context, input hookInput, root string, stdou
 		shown = false
 	}
 	if !shown {
-		emitHookContext(stdout, "PostToolUse", blast)
+		emitChargedHookContext(stdout, root, hookSessionID(input), "PostToolUse", blast)
 	}
 }
 
@@ -260,7 +280,7 @@ func classifyAndScoreHookUse(toolName, command string, payload any) hookToolUse 
 func handleHookToolUse(input hookInput, root string, stdout io.Writer) {
 	creditHookPendingSavings(root, hookSessionID(input))
 	if note := hookSearchNudge(input, root); note != "" {
-		emitHookContext(stdout, "PostToolUse", note)
+		emitChargedHookContext(stdout, root, hookSessionID(input), "PostToolUse", note)
 	}
 }
 
@@ -290,6 +310,10 @@ func handleHookCursorPostTool(input hookInput, root string, stdout io.Writer) {
 			AdditionalContext string `json:"additional_context"`
 		}{AdditionalContext: note}, nil)
 		if err == nil {
+			_ = updateHookSession(root, hookSessionID(input), func(session *sessionState) bool {
+				session.InjectedTokens += savings.Tokens(savings.Length(note))
+				return true
+			})
 			_, _ = stdout.Write(data)
 		}
 	}
@@ -409,6 +433,28 @@ func creditHookPendingSavings(root, id string) {
 	}
 }
 
+// resolveHookTurnRetrievals settles the retrieval pushed into the turn that
+// just ended and records the session's outcome in the push ledger.
+func resolveHookTurnRetrievals(root, id, host string, entries []hookTranscriptEntry) {
+	reply := ""
+	if turn := lastHookAssistantTurn(entries); turn != nil {
+		reply = turn.Text
+	}
+	resolved := false
+	var confirmed, contradicted int
+	_ = updateHookSession(root, id, func(session *sessionState) bool {
+		if len(session.PendingRetrievals) == 0 {
+			return false
+		}
+		resolveHookRetrievals(session, reply)
+		resolved, confirmed, contradicted = true, session.RetrievalsConfirmed, session.RetrievalsContradicted
+		return true
+	})
+	if resolved {
+		recordPushOutcome(root, host, id, confirmed, contradicted)
+	}
+}
+
 func handleHookStop(input hookInput, root string) {
 	id := hookSessionID(input)
 	creditHookPendingSavings(root, id)
@@ -424,6 +470,7 @@ func handleHookStop(input hookInput, root string) {
 	entries := hookTranscriptEntries(input.string("transcript_path"))
 	sampleHookTurnCost(root, id, entries)
 	countHookTallyTurn(root, id, entries)
+	resolveHookTurnRetrievals(root, id, hookHost(input), entries)
 	stats := readHookStats(root)
 	if stats == nil || !stats.Dirty {
 		return
@@ -684,6 +731,10 @@ func handleHookPrompt(ctx context.Context, input hookInput, root string, stdout,
 	if savings.Length(prompt) < hookMinPromptChars || hookEnvelopePattern.MatchString(prompt) {
 		return
 	}
+	host := hookHost(input)
+	if !hookPushAllowed(root, host, hookSessionID(input)) {
+		return
+	}
 	contextDir := hookContextDir(root)
 	scope := ""
 	if stats := readHookStats(root); stats != nil && stats.LastFile != nil {
@@ -698,6 +749,9 @@ func handleHookPrompt(ctx context.Context, input hookInput, root string, stdout,
 	text := ""
 	remember := func(session *sessionState) bool {
 		session.LastQuery = &prompt
+		if session.Host == nil {
+			session.Host = &host
+		}
 		if agent != "" {
 			session.PerAgentQuery[agent] = prompt
 		}
@@ -764,14 +818,14 @@ func runHook(ctx context.Context, event string, user bool, shim string, stdin io
 			note += orientation
 		}
 		if note != "" {
-			emitHookContext(stdout, "SessionStart", note)
+			emitChargedHookContext(stdout, root, id, "SessionStart", note)
 		}
 	case "subagent-start":
 		// A subagent gets neither SessionStart's note nor, as Explore,
 		// CLAUDE.md; without this an Explore subagent started with Grep in 9
 		// of 24 delegated questions, with it in none.
 		if orientation := hookOrientation(root); orientation != "" {
-			emitHookContext(stdout, "SubagentStart", orientation)
+			emitChargedHookContext(stdout, root, hookSessionID(input), "SubagentStart", orientation)
 		}
 	case "prompt":
 		ctx, cancel := context.WithTimeout(ctx, hookPromptAskTimeout(root))

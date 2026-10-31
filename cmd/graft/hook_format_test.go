@@ -76,6 +76,21 @@ func TestHookStatuslineFormatting(t *testing.T) {
 			notContain: []string{"$"},
 		},
 		{
+			name:    "net of injected tokens",
+			stats:   &hookStats{NodeCount: 1},
+			session: &sessionState{SavedTokens: 100_000, InjectedTokens: 40_000, InputCostMicros: new(600_000), InputTokensBilled: new(1_000_000)},
+			contains: []string{
+				"~60,000 tok saved · ~$0.04",
+			},
+			notContain: []string{"100,000"},
+		},
+		{
+			name:       "injected at least saved hides the saving",
+			stats:      &hookStats{NodeCount: 1},
+			session:    &sessionState{SavedTokens: 3_000, InjectedTokens: 3_000},
+			notContain: []string{"tok saved"},
+		},
+		{
 			name:  "workspace sums repos and sizes the edited one",
 			stats: &hookStats{NodeCount: 5, EdgeCount: 3, LastFile: new("api/src/app.ts")},
 			repos: []graph.WorkspaceChildSize{

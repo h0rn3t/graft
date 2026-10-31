@@ -180,24 +180,6 @@ func hookRetrievalBody(hits []graph.AskHit) string {
 	return header + "\n" + strings.Join(blocks, "\n")
 }
 
-func hookRetrievalTokensSaved(result graph.AskResult, cap int) int {
-	if len(result.Hits) == 0 || result.Saved == nil || result.Saved.BaselineChars <= 0 {
-		return 0
-	}
-	if cap > len(result.Hits) {
-		cap = len(result.Hits)
-	}
-	if cap <= 0 {
-		return 0
-	}
-	pack := savings.Tokens(savings.Length(hookRetrievalBody(result.Hits[:cap])))
-	base := savings.Tokens(result.Saved.BaselineChars)
-	if base <= pack {
-		return 0
-	}
-	return base - pack
-}
-
 func formatHookRetrieval(result *graph.AskResult, cap int) string {
 	if result == nil || len(result.Hits) == 0 {
 		return ""
@@ -283,7 +265,19 @@ func relevantHookRetrieval(result *graph.AskResult, session *sessionState, cap i
 	if len(session.InjectedRevisions) > 40 {
 		session.InjectedRevisions = session.InjectedRevisions[len(session.InjectedRevisions)-40:]
 	}
-	session.SavedTokens += hookRetrievalTokensSaved(filtered, cap)
+	// The retrieval earns its baseline only once the turn shows it was used;
+	// what it costs is charged now.
+	pending := hookPendingRetrieval{ReadsAtInjection: session.GraftReads + session.SourceReads}
+	if result.Saved != nil {
+		pending.BaselineTokens = savings.Tokens(result.Saved.BaselineChars)
+	}
+	for _, hit := range fresh[:cap] {
+		file, _, _ := strings.Cut(hit.Pointer, ":")
+		pending.Files = append(pending.Files, file)
+		pending.Symbols = append(pending.Symbols, hookRetrievalSymbols(hit.Title)...)
+	}
+	session.PendingRetrievals = keepLast(append(session.PendingRetrievals, pending), pendingRetrievalLimit)
+	session.InjectedTokens += hookContextTokens(text)
 	return text
 }
 
@@ -315,14 +309,16 @@ func renderHookStatusline(stats *hookStats, repos []graph.WorkspaceChildSize, se
 		hookANSI("38;5;251", fmt.Sprintf("%d nodes / %d edges", stats.NodeCount, stats.EdgeCount)),
 		hookFreshnessSegment(*stats),
 	)
-	if session != nil && session.SavedTokens > 0 {
+	// Net of what the hooks injected: a session graft cost more than it saved
+	// shows no saving at all.
+	if net := session.netSavedTokens(); net > 0 {
 		money := ""
 		if session.InputCostMicros != nil && session.InputTokensBilled != nil {
-			if usd, ok := savings.DollarsSaved(float64(session.SavedTokens), float64(*session.InputCostMicros), float64(*session.InputTokensBilled)); ok {
+			if usd, ok := savings.DollarsSaved(float64(net), float64(*session.InputCostMicros), float64(*session.InputTokensBilled)); ok {
 				money = " · ~" + savings.FormatDollars(usd)
 			}
 		}
-		top = append(top, hookANSI("38;2;84;111;255", fmt.Sprintf("~%s tok saved%s", savings.Group(session.SavedTokens), money)))
+		top = append(top, hookANSI("38;2;84;111;255", fmt.Sprintf("~%s tok saved%s", savings.Group(net), money)))
 	}
 
 	var bottom []string

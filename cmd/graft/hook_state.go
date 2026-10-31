@@ -19,25 +19,40 @@ import (
 const hookStateLockWait = 2 * time.Second
 
 type sessionState struct {
-	LastQuery         *string           `json:"lastQuery"`
-	PerAgentQuery     map[string]string `json:"perAgentQuery"`
-	GraftReads        int               `json:"graftReads"`
-	SourceReads       int               `json:"sourceReads"`
-	SavedTokens       int               `json:"savedTokens"`
-	InjectedPointers  []string          `json:"injectedPointers"`
-	InjectedRevisions []string          `json:"injectedRevisions,omitempty"`
-	BlastShown        []string          `json:"blastShown,omitempty"`        // "<agent>\x00<file>\x00<hash>", oldest first
-	TranscriptOffsets map[string]int64  `json:"transcriptOffsets,omitempty"` // bytes already counted, per transcript
-	Nudges            int               `json:"nudges"`                      // no longer incremented; kept for the session file format
-	SearchNudges      int               `json:"searchNudges,omitzero"`
-	TurnUsedGraft     *bool             `json:"turnUsedGraft,omitempty"`
-	InputCostMicros   *int              `json:"inputCostMicros,omitempty"`
-	InputTokensBilled *int              `json:"inputTokensBilled,omitempty"`
-	LastBillingUUID   *string           `json:"lastBillingUuid,omitempty"`
-	GraftTurns        *int              `json:"graftTurns,omitempty"`
-	ReportedTurns     *int              `json:"reportedTurns,omitempty"`
-	LastTallyUUID     *string           `json:"lastTallyUuid,omitempty"`
-	Host              *string           `json:"host,omitempty"`
+	LastQuery        *string           `json:"lastQuery"`
+	PerAgentQuery    map[string]string `json:"perAgentQuery"`
+	GraftReads       int               `json:"graftReads"`
+	SourceReads      int               `json:"sourceReads"`
+	SavedTokens      int               `json:"savedTokens"`
+	InjectedTokens   int               `json:"injectedTokens,omitzero"` // estimated tokens of every context the hooks emitted
+	InjectedPointers []string          `json:"injectedPointers"`
+	// Prompt retrieval waiting for its turn to end, and how the session's
+	// resolved retrieval turned out.
+	PendingRetrievals      []hookPendingRetrieval `json:"pendingRetrievals,omitempty"`
+	RetrievalsConfirmed    int                    `json:"retrievalsConfirmed,omitzero"`
+	RetrievalsContradicted int                    `json:"retrievalsContradicted,omitzero"`
+	InjectedRevisions      []string               `json:"injectedRevisions,omitempty"`
+	BlastShown             []string               `json:"blastShown,omitempty"`        // "<agent>\x00<file>\x00<hash>", oldest first
+	TranscriptOffsets      map[string]int64       `json:"transcriptOffsets,omitempty"` // bytes already counted, per transcript
+	Nudges                 int                    `json:"nudges"`                      // no longer incremented; kept for the session file format
+	SearchNudges           int                    `json:"searchNudges,omitzero"`
+	TurnUsedGraft          *bool                  `json:"turnUsedGraft,omitempty"`
+	InputCostMicros        *int                   `json:"inputCostMicros,omitempty"`
+	InputTokensBilled      *int                   `json:"inputTokensBilled,omitempty"`
+	LastBillingUUID        *string                `json:"lastBillingUuid,omitempty"`
+	GraftTurns             *int                   `json:"graftTurns,omitempty"`
+	ReportedTurns          *int                   `json:"reportedTurns,omitempty"`
+	LastTallyUUID          *string                `json:"lastTallyUuid,omitempty"`
+	Host                   *string                `json:"host,omitempty"`
+}
+
+// netSavedTokens is what the session saved less what the hooks injected; a
+// nil session saved nothing.
+func (session *sessionState) netSavedTokens() int {
+	if session == nil {
+		return 0
+	}
+	return session.SavedTokens - session.InjectedTokens
 }
 
 func hookContextDir(root string) string {
