@@ -102,8 +102,8 @@ func TestHookSessionStateReadsOlderLayout(t *testing.T) {
 	older := `{"lastQuery":null,"perAgentQuery":{},"graftReads":1,"sourceReads":0,"savedTokens":900,"injectedPointers":[],"nudges":0}`
 	writeFixtureFile(t, root, "graft/.cache/session/old.json", older)
 	session := readHookSession(root, "old")
-	if session.InjectedTokens != 0 || session.PendingRetrievals != nil || session.netSavedTokens() != 900 {
-		t.Errorf("readHookSession(older layout) = injected %d, pending %v, net %d; want 0, none, 900", session.InjectedTokens, session.PendingRetrievals, session.netSavedTokens())
+	if session.InjectedTokens != 0 || session.PendingInjections != nil || session.netSavedTokens() != 900 {
+		t.Errorf("readHookSession(older layout) = injected %d, pending %v, net %d; want 0, none, 900", session.InjectedTokens, session.PendingInjections, session.netSavedTokens())
 	}
 	if err := writeHookSession(root, "old", session); err != nil {
 		t.Fatal(err)

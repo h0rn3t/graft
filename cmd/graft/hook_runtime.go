@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,11 +127,15 @@ func hookContextTokens(context string) int {
 	return savings.Tokens(savings.Length(hookContextClip(context)))
 }
 
-// emitChargedHookContext charges context to session id's injected tokens and
-// emits it. A peer holding the session lock costs the charge, not the output.
-func emitChargedHookContext(stdout io.Writer, root, id, event, context string) {
+// emitChargedHookContext charges context to session id's injected tokens,
+// queues pending for resolution when it is not nil, and emits context. A peer
+// holding the session lock costs the charge, not the output.
+func emitChargedHookContext(stdout io.Writer, root, id, event, context string, pending *hookPendingInjection) {
 	_ = updateHookSession(root, id, func(session *sessionState) bool {
 		session.InjectedTokens += hookContextTokens(context)
+		if pending != nil {
+			addPendingInjection(session, *pending)
+		}
 		return true
 	})
 	emitHookContext(stdout, event, context)
@@ -207,7 +212,7 @@ func handleHookPostEdit(ctx context.Context, input hookInput, root string, stdou
 	if err != nil {
 		return
 	}
-	blast := formatHookBlastRadius(*wiring, file, 8)
+	blast, dependents := formatHookBlastRadius(*wiring, file, 8)
 	if blast == "" {
 		return
 	}
@@ -221,9 +226,15 @@ func handleHookPostEdit(ctx context.Context, input hookInput, root string, stdou
 		// Without the session lock, repeating a blast radius beats hiding it.
 		shown = false
 	}
-	if !shown {
-		emitChargedHookContext(stdout, root, hookSessionID(input), "PostToolUse", blast)
+	if shown || !hookPushAllowed(root, hookHost(input), hookSessionID(input), pushBlast) {
+		return
 	}
+	pending := hookPendingInjection{Channel: pushBlast, Agent: input.string("agent_id"), After: input.string("tool_use_id")}
+	for _, node := range dependents {
+		pending.Files = append(pending.Files, filepath.Base(node.Path))
+		pending.Symbols = append(pending.Symbols, hookRetrievalSymbols(node.Name)...)
+	}
+	emitChargedHookContext(stdout, root, hookSessionID(input), "PostToolUse", blast, &pending)
 }
 
 // hookBlastShownLimit bounds how many blast radii a session remembers.
@@ -279,8 +290,9 @@ func classifyAndScoreHookUse(toolName, command string, payload any) hookToolUse 
 // here: they come from the transcript when the turn or subagent stops.
 func handleHookToolUse(input hookInput, root string, stdout io.Writer) {
 	creditHookPendingSavings(root, hookSessionID(input))
-	if note := hookSearchNudge(input, root); note != "" {
-		emitChargedHookContext(stdout, root, hookSessionID(input), "PostToolUse", note)
+	if note := hookSearchNudge(input, root, hookHost(input)); note != "" {
+		pending := hookPendingInjection{Channel: pushNudge, Agent: input.string("agent_id"), After: input.string("tool_use_id")}
+		emitChargedHookContext(stdout, root, hookSessionID(input), "PostToolUse", note, &pending)
 	}
 }
 
@@ -304,8 +316,9 @@ func handleHookCursorPostTool(input hookInput, root string, stdout io.Writer) {
 	use := classifyAndScoreHookUse(toolName, command, payload)
 	use.Host = "cursor"
 	_ = recordHookToolUse(root, hookSessionID(input), use)
-	// Cursor reads additional_context; Claude's hookSpecificOutput is ignored here.
-	if note := hookSearchNudge(input, root); note != "" {
+	// Cursor reads additional_context; Claude's hookSpecificOutput is ignored
+	// here. Cursor transcripts give no evidence, so the nudge is not queued.
+	if note := hookSearchNudge(input, root, hookHostCursor); note != "" {
 		data, err := jsonv2.Marshal(struct {
 			AdditionalContext string `json:"additional_context"`
 		}{AdditionalContext: note}, nil)
@@ -433,26 +446,33 @@ func creditHookPendingSavings(root, id string) {
 	}
 }
 
-// resolveHookTurnRetrievals settles the retrieval pushed into the turn that
-// just ended and records the session's outcome in the push ledger.
-func resolveHookTurnRetrievals(root, id, host string, entries []hookTranscriptEntry) {
-	reply := ""
-	if turn := lastHookAssistantTurn(entries); turn != nil {
-		reply = turn.Text
-	}
-	resolved := false
-	var confirmed, contradicted int
+// resolveHookTurnInjections settles the pending injections decides selects
+// and records the session's outcome per channel in the push ledger.
+func resolveHookTurnInjections(root, id, host, reply string, decides func(hookPendingInjection) bool) {
+	var tally map[string]pushTally
 	_ = updateHookSession(root, id, func(session *sessionState) bool {
-		if len(session.PendingRetrievals) == 0 {
+		if !resolveHookInjections(session, reply, decides) {
 			return false
 		}
-		resolveHookRetrievals(session, reply)
-		resolved, confirmed, contradicted = true, session.RetrievalsConfirmed, session.RetrievalsContradicted
+		tally = maps.Clone(session.PushTally)
 		return true
 	})
-	if resolved {
-		recordPushOutcome(root, host, id, confirmed, contradicted)
+	if tally != nil {
+		recordPushOutcomes(root, host, id, tally)
 	}
+}
+
+// hookMainTurnDecides selects what the main agent's turn end can settle:
+// everything but subagent orientation, which its subagent's stop settles,
+// and session orientation still waiting for a first exploration call.
+func hookMainTurnDecides(pending hookPendingInjection) bool {
+	switch pending.Channel {
+	case pushSubagentOrientation:
+		return false
+	case pushOrientation:
+		return pending.First != ""
+	}
+	return true
 }
 
 func handleHookStop(input hookInput, root string) {
@@ -461,16 +481,24 @@ func handleHookStop(input hookInput, root string) {
 	// A subagent's own transcript is counted when it stops; the main
 	// transcript waits for the main agent's turn to end.
 	if input.string("hook_event_name") == "SubagentStop" {
-		if agent := input.string("agent_transcript_path"); agent != input.string("transcript_path") {
-			countHookTranscriptTools(root, id, agent)
+		if transcript := input.string("agent_transcript_path"); transcript != input.string("transcript_path") {
+			agent := input.string("agent_id")
+			countHookTranscriptTools(root, id, transcript, agent)
+			resolveHookTurnInjections(root, id, hookHost(input), "", func(pending hookPendingInjection) bool {
+				return pending.Channel == pushSubagentOrientation && pending.Agent == agent
+			})
 		}
 		return
 	}
-	countHookTranscriptTools(root, id, input.string("transcript_path"))
+	countHookTranscriptTools(root, id, input.string("transcript_path"), "")
 	entries := hookTranscriptEntries(input.string("transcript_path"))
 	sampleHookTurnCost(root, id, entries)
 	countHookTallyTurn(root, id, entries)
-	resolveHookTurnRetrievals(root, id, hookHost(input), entries)
+	reply := ""
+	if turn := lastHookAssistantTurn(entries); turn != nil {
+		reply = turn.Text
+	}
+	resolveHookTurnInjections(root, id, hookHost(input), reply, hookMainTurnDecides)
 	stats := readHookStats(root)
 	if stats == nil || !stats.Dirty {
 		return
@@ -732,7 +760,7 @@ func handleHookPrompt(ctx context.Context, input hookInput, root string, stdout,
 		return
 	}
 	host := hookHost(input)
-	if !hookPushAllowed(root, host, hookSessionID(input)) {
+	if !hookPushAllowed(root, host, hookSessionID(input), pushRetrieval) {
 		return
 	}
 	contextDir := hookContextDir(root)
@@ -811,21 +839,40 @@ func runHook(ctx context.Context, event string, user bool, shim string, stdin io
 			})
 		}
 		note := strings.Join(hookSessionStartLines(ctx, root), "\n")
-		if orientation := hookOrientation(root); orientation != "" {
+		var pending *hookPendingInjection
+		banner, orientation := hookOrientation(root)
+		if orientation != "" && hookPushAllowed(root, hookHost(input), id, pushOrientation) {
+			pending = &hookPendingInjection{Channel: pushOrientation}
+		} else {
+			orientation = banner
+		}
+		if orientation != "" {
 			if note != "" {
 				note += "\n\n"
 			}
 			note += orientation
 		}
 		if note != "" {
-			emitChargedHookContext(stdout, root, id, "SessionStart", note)
+			emitChargedHookContext(stdout, root, id, "SessionStart", note, pending)
 		}
 	case "subagent-start":
 		// A subagent gets neither SessionStart's note nor, as Explore,
 		// CLAUDE.md; without this an Explore subagent started with Grep in 9
 		// of 24 delegated questions, with it in none.
-		if orientation := hookOrientation(root); orientation != "" {
-			emitChargedHookContext(stdout, root, hookSessionID(input), "SubagentStart", orientation)
+		id := hookSessionID(input)
+		var pending *hookPendingInjection
+		banner, orientation := hookOrientation(root)
+		if orientation != "" && hookPushAllowed(root, hookHost(input), id, pushSubagentOrientation) {
+			// Without an agent_id its stop cannot be told apart, so nothing
+			// is queued.
+			if agent := input.string("agent_id"); agent != "" {
+				pending = &hookPendingInjection{Channel: pushSubagentOrientation, Agent: agent}
+			}
+		} else {
+			orientation = banner
+		}
+		if orientation != "" {
+			emitChargedHookContext(stdout, root, id, "SubagentStart", orientation, pending)
 		}
 	case "prompt":
 		ctx, cancel := context.WithTimeout(ctx, hookPromptAskTimeout(root))

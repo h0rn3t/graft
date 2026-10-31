@@ -60,18 +60,20 @@ func hookStaleBanner(freshness *hookFreshness) string {
 
 // hookOrientation is the note a session or subagent starts with, or "" when
 // the repo has no graph.
-func hookOrientation(root string) string {
+// hookOrientation returns the stale banner, which is never gated, and the
+// whole orientation that starts with it; both are empty without an index.
+func hookOrientation(root string) (banner, orientation string) {
 	index, err := os.ReadFile(filepath.Join(hookContextDir(root), "INDEX.md"))
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	staleNote := hookStaleBanner(hookIndexFreshness(root))
 	// Claude Code shows the MCP server's own instructions, which carry the
 	// tool guide; the CLI guide and repo map would repeat it on every turn.
 	if os.Getenv("CLAUDE_PROJECT_DIR") != "" && hosts.ClaudeMCPWired(root, hookHomeDir()) {
-		return formatHookMCPOrientation(staleNote)
+		return staleNote, formatHookMCPOrientation(staleNote)
 	}
-	return formatHookOrientation(string(index), 1500, staleNote)
+	return staleNote, formatHookOrientation(string(index), 1500, staleNote)
 }
 
 // formatHookMCPOrientation is the session-start note for a host that already
@@ -107,7 +109,9 @@ func hookTruncateUTF16(value string, limit int) string {
 	return value
 }
 
-func formatHookBlastRadius(wiring graph.GraphV1, filePath string, cap int) string {
+// formatHookBlastRadius lists up to cap dependents of filePath's symbols
+// outside the file, and returns the listed dependents' nodes.
+func formatHookBlastRadius(wiring graph.GraphV1, filePath string, cap int) (string, []graph.NodeV1) {
 	ids := make(map[string]struct{})
 	normalizedPath := filepath.ToSlash(filePath)
 	for _, node := range wiring.Nodes {
@@ -117,7 +121,7 @@ func formatHookBlastRadius(wiring graph.GraphV1, filePath string, cap int) strin
 		}
 	}
 	if len(ids) == 0 {
-		return ""
+		return "", nil
 	}
 
 	var edges []graph.EdgeV1
@@ -129,7 +133,7 @@ func formatHookBlastRadius(wiring graph.GraphV1, filePath string, cap int) strin
 		}
 	}
 	if len(edges) == 0 {
-		return ""
+		return "", nil
 	}
 	if cap < 0 {
 		cap = 0
@@ -143,17 +147,19 @@ func formatHookBlastRadius(wiring graph.GraphV1, filePath string, cap int) strin
 		nodes[node.ID] = node
 	}
 	items := make([]string, 0, cap+1)
+	var dependents []graph.NodeV1
 	for _, edge := range edges[:cap] {
 		label := edge.Source
 		if node, ok := nodes[edge.Source]; ok {
 			label = node.Name + " (" + filepath.Base(node.Path) + ")"
+			dependents = append(dependents, node)
 		}
 		items = append(items, fmt.Sprintf(" • %s ← %s", edge.Relation, label))
 	}
 	if len(edges) > cap {
 		items = append(items, fmt.Sprintf(" • +%d more", len(edges)-cap))
 	}
-	return fmt.Sprintf("[graft] blast radius for %s, who depends on it:\n%s", filepath.Base(filePath), strings.Join(items, "\n"))
+	return fmt.Sprintf("[graft] blast radius for %s, who depends on it:\n%s", filepath.Base(filePath), strings.Join(items, "\n")), dependents
 }
 
 func hookRetrievalBody(hits []graph.AskHit) string {
@@ -267,7 +273,7 @@ func relevantHookRetrieval(result *graph.AskResult, session *sessionState, cap i
 	}
 	// The retrieval earns its baseline only once the turn shows it was used;
 	// what it costs is charged now.
-	pending := hookPendingRetrieval{ReadsAtInjection: session.GraftReads + session.SourceReads}
+	pending := hookPendingInjection{Channel: pushRetrieval}
 	if result.Saved != nil {
 		pending.BaselineTokens = savings.Tokens(result.Saved.BaselineChars)
 	}
@@ -276,7 +282,7 @@ func relevantHookRetrieval(result *graph.AskResult, session *sessionState, cap i
 		pending.Files = append(pending.Files, file)
 		pending.Symbols = append(pending.Symbols, hookRetrievalSymbols(hit.Title)...)
 	}
-	session.PendingRetrievals = keepLast(append(session.PendingRetrievals, pending), pendingRetrievalLimit)
+	addPendingInjection(session, pending)
 	session.InjectedTokens += hookContextTokens(text)
 	return text
 }

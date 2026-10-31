@@ -147,14 +147,15 @@ func TestHookBlastRadiusFormatting(t *testing.T) {
 			{Source: "src/pkce.ts#gen", Target: "src/pkce.ts#verify", Relation: "calls"},
 		},
 	}
-	got := stripHookANSI(formatHookBlastRadius(wiring, "/abs/repo/src/pkce.ts", 8))
+	text, _ := formatHookBlastRadius(wiring, "/abs/repo/src/pkce.ts", 8)
+	got := stripHookANSI(text)
 	if !strings.Contains(got, "blast radius for pkce.ts") || !strings.Contains(got, "calls ← exchange (client.ts)") {
 		t.Errorf("formatHookBlastRadius() = %q, want external caller label", got)
 	}
 	if strings.Contains(got, "gen (pkce.ts)") {
 		t.Errorf("formatHookBlastRadius() = %q, want same-file edge excluded", got)
 	}
-	if got := formatHookBlastRadius(wiring, "/abs/repo/src/unknown.ts", 8); got != "" {
+	if got, _ := formatHookBlastRadius(wiring, "/abs/repo/src/unknown.ts", 8); got != "" {
 		t.Errorf("formatHookBlastRadius(unknown) = %q, want empty", got)
 	}
 }

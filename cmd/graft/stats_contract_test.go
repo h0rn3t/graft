@@ -81,23 +81,34 @@ func TestStatsReportsNetAndPush(t *testing.T) {
 		}
 		return stdout.String()
 	}
-	for _, want := range []string{"tokens saved:  ~10,000", "injected:      ~2,500", "net saved:     ~7,500", "prompt push:   on (support 0)"} {
+	for _, want := range []string{"tokens saved:  ~10,000", "injected:      ~2,500", "net saved:     ~7,500", "push retrieval:   on (support 0)", "push blast:       on (support 0)"} {
 		if got := stats(); !strings.Contains(got, want) {
 			t.Errorf("stats() = %q, want %q", got, want)
 		}
 	}
 
-	recordPushOutcome(root, hookHostClaude, "bad1", 0, 1)
-	recordPushOutcome(root, hookHostClaude, "bad2", 0, 1)
-	if got, want := stats(), "prompt push:   off (support -1.8, re-audit in 5 new sessions)"; !strings.Contains(got, want) {
-		t.Errorf("stats(negative support) = %q, want %q", got, want)
+	// Only the blast-radius channel turns off.
+	for _, id := range []string{"bad1", "bad2"} {
+		recordPushOutcomes(root, hookHostClaude, id, map[string]pushTally{pushBlast: {Contradicted: 1}})
 	}
-	if got, want := stats("--json"), `"push": {
-    "state": "off",
-    "support": -1.8,
-    "untilReaudit": 5
-  }`; !strings.Contains(got, want) || !strings.Contains(got, `"injectedTokens": 2500`) {
-		t.Errorf("stats(--json, negative support) = %q, want injectedTokens and %q", got, want)
+	for _, want := range []string{"push blast:       off (support -1.8, re-audit in 5 new sessions)", "push retrieval:   on (support 0)", "push subagents:   on (support 0)"} {
+		if got := stats(); !strings.Contains(got, want) {
+			t.Errorf("stats(negative blast support) = %q, want %q", got, want)
+		}
+	}
+	got := stats("--json")
+	for _, want := range []string{`"blast": {
+      "state": "off",
+      "support": -1.8,
+      "untilReaudit": 5
+    }`, `"retrieval": {
+      "state": "on",
+      "support": 0,
+      "untilReaudit": 0
+    }`, `"injectedTokens": 2500`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stats(--json, negative blast support) = %q, want %q", got, want)
+		}
 	}
 
 	codex := filepath.Join(root, "graft", ".cache", "session", "codex.json")
@@ -106,7 +117,7 @@ func TestStatsReportsNetAndPush(t *testing.T) {
 	if err := os.Chtimes(codex, later, later); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stats(), "prompt push:   on (support 0)"; !strings.Contains(got, "session codex") || !strings.Contains(got, want) {
+	if got, want := stats(), "push blast:       on (support 0)"; !strings.Contains(got, "session codex") || !strings.Contains(got, want) {
 		t.Errorf("stats(latest session is codex) = %q, want the codex ledger: %q", got, want)
 	}
 }

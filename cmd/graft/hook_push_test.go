@@ -32,8 +32,8 @@ func TestPushLedgerSupport(t *testing.T) {
 		{"recent confirmation outweighs", []pushOutcome{contradict, confirm}, 0.2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := (pushLedger{Sessions: tc.sessions}).support(); math.Abs(got-tc.want) > 1e-9 {
-				t.Errorf("pushLedger{%v}.support() = %v, want %v", tc.sessions, got, tc.want)
+			if got := (pushChannel{Sessions: tc.sessions}).support(); math.Abs(got-tc.want) > 1e-9 {
+				t.Errorf("pushChannel{%v}.support() = %v, want %v", tc.sessions, got, tc.want)
 			}
 		})
 	}
@@ -41,11 +41,11 @@ func TestPushLedgerSupport(t *testing.T) {
 
 func TestPushLedgerFailsOpen(t *testing.T) {
 	root := t.TempDir()
-	if !hookPushAllowed(root, hookHostClaude, "s1") {
+	if !hookPushAllowed(root, hookHostClaude, "s1", pushRetrieval) {
 		t.Error("hookPushAllowed(no ledger) = false, want true")
 	}
 	writeFixtureFile(t, root, "graft/.cache/push-ledger-claude.json", "{not json")
-	if !hookPushAllowed(root, hookHostClaude, "s2") {
+	if !hookPushAllowed(root, hookHostClaude, "s2", pushRetrieval) {
 		t.Error("hookPushAllowed(corrupt ledger) = false, want true")
 	}
 	data, err := os.ReadFile(pushLedgerPath(root, hookHostClaude))
@@ -57,12 +57,17 @@ func TestPushLedgerFailsOpen(t *testing.T) {
 	}
 }
 
+// recordRetrievalOutcome records session id's retrieval tally.
+func recordRetrievalOutcome(root, host, id string, confirmed, contradicted int) {
+	recordPushOutcomes(root, host, id, map[string]pushTally{pushRetrieval: {Confirmed: confirmed, Contradicted: contradicted}})
+}
+
 // negativeLedger writes a ledger whose support is -1.8 (two contradictions).
 func negativeLedger(t *testing.T, root string) {
 	t.Helper()
-	recordPushOutcome(root, hookHostClaude, "bad1", 0, 1)
-	recordPushOutcome(root, hookHostClaude, "bad2", 0, 2)
-	if got := readPushLedger(root, hookHostClaude).support(); got >= 0 {
+	recordRetrievalOutcome(root, hookHostClaude, "bad1", 0, 1)
+	recordRetrievalOutcome(root, hookHostClaude, "bad2", 0, 2)
+	if got := readPushLedger(root, hookHostClaude).Channels[pushRetrieval].support(); got >= 0 {
 		t.Fatalf("support after two contradicting sessions = %v, want negative", got)
 	}
 }
@@ -71,57 +76,57 @@ func TestPushReauditEveryFifthNewSession(t *testing.T) {
 	root := t.TempDir()
 	negativeLedger(t, root)
 	for i := 1; i <= 4; i++ {
-		if id := fmt.Sprintf("new%d", i); hookPushAllowed(root, hookHostClaude, id) {
+		if id := fmt.Sprintf("new%d", i); hookPushAllowed(root, hookHostClaude, id, pushRetrieval) {
 			t.Errorf("hookPushAllowed(%s, negative support) = true, want false", id)
 		}
 	}
-	if hookPushAllowed(root, hookHostClaude, "new1") {
+	if hookPushAllowed(root, hookHostClaude, "new1", pushRetrieval) {
 		t.Error("hookPushAllowed(resumed new1) = true, want false")
 	}
-	if got := readPushLedger(root, hookHostClaude).NewSince; got != 4 {
+	if got := readPushLedger(root, hookHostClaude).Channels[pushRetrieval].NewSince; got != 4 {
 		t.Errorf("newSince after four new sessions and a resume = %d, want 4", got)
 	}
-	if !hookPushAllowed(root, hookHostClaude, "audit") {
+	if !hookPushAllowed(root, hookHostClaude, "audit", pushRetrieval) {
 		t.Fatal("hookPushAllowed(fifth new session) = false, want a re-audit push")
 	}
-	if !hookPushAllowed(root, hookHostClaude, "audit") {
+	if !hookPushAllowed(root, hookHostClaude, "audit", pushRetrieval) {
 		t.Error("hookPushAllowed(re-audit session, second prompt) = false, want true")
 	}
-	if hookPushAllowed(root, hookHostClaude, "new6") {
+	if hookPushAllowed(root, hookHostClaude, "new6", pushRetrieval) {
 		t.Error("hookPushAllowed(sixth new session) = true, want false")
 	}
 
 	// One confirming re-audit leaves -1.44+1; two more lift support above zero.
-	recordPushOutcome(root, hookHostClaude, "audit", 1, 0)
-	recordPushOutcome(root, hookHostClaude, "good1", 1, 0)
-	recordPushOutcome(root, hookHostClaude, "good2", 1, 0)
-	if !hookPushAllowed(root, hookHostClaude, "new7") || !hookPushAllowed(root, hookHostClaude, "new2") {
+	recordRetrievalOutcome(root, hookHostClaude, "audit", 1, 0)
+	recordRetrievalOutcome(root, hookHostClaude, "good1", 1, 0)
+	recordRetrievalOutcome(root, hookHostClaude, "good2", 1, 0)
+	if !hookPushAllowed(root, hookHostClaude, "new7", pushRetrieval) || !hookPushAllowed(root, hookHostClaude, "new2", pushRetrieval) {
 		t.Error("hookPushAllowed(after support recovered) = false, want true for every session")
 	}
-	if ledger := readPushLedger(root, hookHostClaude); ledger.NewSince != 0 || len(ledger.Audit) != 0 {
+	if ledger := readPushLedger(root, hookHostClaude).Channels[pushRetrieval]; ledger.NewSince != 0 || len(ledger.Audit) != 0 {
 		t.Errorf("ledger after recovery = newSince %d, audit %v; want both reset", ledger.NewSince, ledger.Audit)
 	}
 }
 
 func TestRecordPushOutcome(t *testing.T) {
 	root := t.TempDir()
-	recordPushOutcome(root, hookHostClaude, "neutral", 0, 0)
-	if got := readPushLedger(root, hookHostClaude).Sessions; len(got) != 0 {
+	recordRetrievalOutcome(root, hookHostClaude, "neutral", 0, 0)
+	if got := readPushLedger(root, hookHostClaude).Channels[pushRetrieval].Sessions; len(got) != 0 {
 		t.Errorf("recordPushOutcome(neutral) sessions = %v, want none", got)
 	}
-	recordPushOutcome(root, hookHostClaude, "s1", 3, 1)
-	recordPushOutcome(root, hookHostClaude, "s1", 3, 3)
-	if got := readPushLedger(root, hookHostClaude).Sessions; !slices.Equal(got, []pushOutcome{{ID: "s1", Outcome: 1}}) {
+	recordRetrievalOutcome(root, hookHostClaude, "s1", 3, 1)
+	recordRetrievalOutcome(root, hookHostClaude, "s1", 3, 3)
+	if got := readPushLedger(root, hookHostClaude).Channels[pushRetrieval].Sessions; !slices.Equal(got, []pushOutcome{{ID: "s1", Outcome: 1}}) {
 		t.Errorf("recordPushOutcome(3 confirmed, then 3 of each) = %v, want one confirming outcome", got)
 	}
-	recordPushOutcome(root, hookHostClaude, "s1", 3, 4)
-	if got := readPushLedger(root, hookHostClaude).Sessions; !slices.Equal(got, []pushOutcome{{ID: "s1", Outcome: -1}}) {
+	recordRetrievalOutcome(root, hookHostClaude, "s1", 3, 4)
+	if got := readPushLedger(root, hookHostClaude).Channels[pushRetrieval].Sessions; !slices.Equal(got, []pushOutcome{{ID: "s1", Outcome: -1}}) {
 		t.Errorf("recordPushOutcome(contradicted overtakes) = %v, want the one outcome flipped", got)
 	}
 	for i := range pushLedgerSessions + 3 {
-		recordPushOutcome(root, hookHostClaude, fmt.Sprintf("many%d", i), 1, 0)
+		recordRetrievalOutcome(root, hookHostClaude, fmt.Sprintf("many%d", i), 1, 0)
 	}
-	if got := readPushLedger(root, hookHostClaude).Sessions; len(got) != pushLedgerSessions || got[len(got)-1].ID != fmt.Sprintf("many%d", pushLedgerSessions+2) {
+	if got := readPushLedger(root, hookHostClaude).Channels[pushRetrieval].Sessions; len(got) != pushLedgerSessions || got[len(got)-1].ID != fmt.Sprintf("many%d", pushLedgerSessions+2) {
 		t.Errorf("ledger after %d sessions holds %d, newest %q; want the newest %d", pushLedgerSessions+4, len(got), got[len(got)-1].ID, pushLedgerSessions)
 	}
 }
@@ -130,10 +135,10 @@ func TestRecordPushOutcomeConcurrentSessions(t *testing.T) {
 	root := t.TempDir()
 	var wg sync.WaitGroup
 	for i := range 8 {
-		wg.Go(func() { recordPushOutcome(root, hookHostClaude, fmt.Sprintf("s%d", i), 1, 0) })
+		wg.Go(func() { recordRetrievalOutcome(root, hookHostClaude, fmt.Sprintf("s%d", i), 1, 0) })
 	}
 	wg.Wait()
-	if got := readPushLedger(root, hookHostClaude).Sessions; len(got) != 8 {
+	if got := readPushLedger(root, hookHostClaude).Channels[pushRetrieval].Sessions; len(got) != 8 {
 		t.Errorf("ledger after 8 concurrent sessions = %v, want 8 outcomes", got)
 	}
 }
@@ -155,13 +160,13 @@ func TestHookHost(t *testing.T) {
 func TestPushLedgerIsPerHost(t *testing.T) {
 	root := t.TempDir()
 	negativeLedger(t, root)
-	if hookPushAllowed(root, hookHostClaude, "claude-new") {
+	if hookPushAllowed(root, hookHostClaude, "claude-new", pushRetrieval) {
 		t.Error("hookPushAllowed(claude, negative claude support) = true, want false")
 	}
-	if !hookPushAllowed(root, hookHostCodex, "codex-new") {
+	if !hookPushAllowed(root, hookHostCodex, "codex-new", pushRetrieval) {
 		t.Error("hookPushAllowed(codex, negative claude support) = false, want the codex ledger to push")
 	}
-	if got := readPushLedger(root, hookHostCodex); len(got.Sessions) != 0 || got.NewSince != 0 {
+	if got := readPushLedger(root, hookHostCodex).Channels[pushRetrieval]; len(got.Sessions) != 0 || got.NewSince != 0 {
 		t.Errorf("codex ledger after claude outcomes = %+v, want no sessions and no re-audit count", got)
 	}
 }
@@ -205,14 +210,14 @@ func TestHookRetrievalSymbols(t *testing.T) {
 
 func TestPendingRetrievalIsBounded(t *testing.T) {
 	session := &sessionState{PerAgentQuery: map[string]string{}, InjectedPointers: []string{}}
-	for i := range pendingRetrievalLimit + 1 {
+	for i := range pendingInjectionLimit + 1 {
 		result := graph.AskResult{Mode: "structural", Hits: []graph.AskHit{{Title: fmt.Sprintf("fn%d", i), Pointer: fmt.Sprintf("f%d.go:L1", i)}}}
 		if relevantHookRetrieval(&result, session, 3, "") == "" {
 			t.Fatalf("relevantHookRetrieval(hit %d) = empty, want retrieval", i)
 		}
 	}
-	if got := session.PendingRetrievals; len(got) != pendingRetrievalLimit || got[0].Files[0] != "f1.go" {
-		t.Errorf("pending after %d injections = %d, oldest %v; want %d, oldest f1.go", pendingRetrievalLimit+1, len(got), got[0].Files, pendingRetrievalLimit)
+	if got := session.PendingInjections; len(got) != pendingInjectionLimit || got[0].Files[0] != "f1.go" {
+		t.Errorf("pending after %d injections = %d, oldest %v; want %d, oldest f1.go", pendingInjectionLimit+1, len(got), got[0].Files, pendingInjectionLimit)
 	}
 }
 
@@ -311,22 +316,22 @@ func TestHookRetrievalResolution(t *testing.T) {
 			if turn.prompt() == "" {
 				t.Fatal("prompt hook injected nothing, want retrieval")
 			}
-			if got := readHookSession(turn.root, "s"); got.SavedTokens != 0 || len(got.PendingRetrievals) != 1 {
-				t.Fatalf("after injection saved = %d, pending = %d; want 0 and 1", got.SavedTokens, len(got.PendingRetrievals))
+			if got := readHookSession(turn.root, "s"); got.SavedTokens != 0 || len(got.PendingInjections) != 1 {
+				t.Fatalf("after injection saved = %d, pending = %d; want 0 and 1", got.SavedTokens, len(got.PendingInjections))
 			}
 			turn.tools(tc.reply, tc.calls...)
 			got := turn.stop()
-			if got.RetrievalsConfirmed != tc.wantConfirmed || got.RetrievalsContradicted != tc.wantContra || len(got.PendingRetrievals) != 0 {
+			if got.PushTally[pushRetrieval].Confirmed != tc.wantConfirmed || got.PushTally[pushRetrieval].Contradicted != tc.wantContra || len(got.PendingInjections) != 0 {
 				t.Errorf("after turn end confirmed %d, contradicted %d, pending %d; want %d, %d, 0",
-					got.RetrievalsConfirmed, got.RetrievalsContradicted, len(got.PendingRetrievals), tc.wantConfirmed, tc.wantContra)
+					got.PushTally[pushRetrieval].Confirmed, got.PushTally[pushRetrieval].Contradicted, len(got.PendingInjections), tc.wantConfirmed, tc.wantContra)
 			}
 			if wantSaved := tc.wantConfirmed * 4_000; got.SavedTokens != wantSaved {
 				t.Errorf("savedTokens after turn end = %d, want %d", got.SavedTokens, wantSaved)
 			}
-			if ledger := readPushLedger(turn.root, hookHostClaude).Sessions; !slices.Equal(ledger, tc.wantOutcome) {
+			if ledger := readPushLedger(turn.root, hookHostClaude).Channels[pushRetrieval].Sessions; !slices.Equal(ledger, tc.wantOutcome) {
 				t.Errorf("ledger sessions = %v, want %v", ledger, tc.wantOutcome)
 			}
-			if again := turn.stop(); again.RetrievalsConfirmed != got.RetrievalsConfirmed || again.RetrievalsContradicted != got.RetrievalsContradicted || again.SavedTokens != got.SavedTokens {
+			if again := turn.stop(); again.PushTally[pushRetrieval].Confirmed != got.PushTally[pushRetrieval].Confirmed || again.PushTally[pushRetrieval].Contradicted != got.PushTally[pushRetrieval].Contradicted || again.SavedTokens != got.SavedTokens {
 				t.Errorf("second turn end changed the session: %+v -> %+v", got, again)
 			}
 		})
@@ -340,12 +345,12 @@ func TestHookSubagentReadConfirmsAtParentStop(t *testing.T) {
 	writeFixtureFile(t, filepath.Dir(agent), filepath.Base(agent),
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/repo/src/auth.ts"}}]}}`+"\n")
 	handleHookStop(hookInput{"session_id": "s", "transcript_path": turn.path, "agent_transcript_path": agent, "hook_event_name": "SubagentStop"}, turn.root)
-	if got := readHookSession(turn.root, "s"); got.RetrievalsConfirmed != 0 || len(got.PendingRetrievals) != 1 || !got.PendingRetrievals[0].Touched {
-		t.Fatalf("after SubagentStop confirmed %d, pending %v; want unresolved and touched", got.RetrievalsConfirmed, got.PendingRetrievals)
+	if got := readHookSession(turn.root, "s"); got.PushTally[pushRetrieval].Confirmed != 0 || len(got.PendingInjections) != 1 || !got.PendingInjections[0].Touched {
+		t.Fatalf("after SubagentStop confirmed %d, pending %v; want unresolved and touched", got.PushTally[pushRetrieval].Confirmed, got.PendingInjections)
 	}
 	turn.tools("done")
-	if got := turn.stop(); got.RetrievalsConfirmed != 1 {
-		t.Errorf("after the parent's turn end confirmed = %d, want 1", got.RetrievalsConfirmed)
+	if got := turn.stop(); got.PushTally[pushRetrieval].Confirmed != 1 {
+		t.Errorf("after the parent's turn end confirmed = %d, want 1", got.PushTally[pushRetrieval].Confirmed)
 	}
 }
 
@@ -380,12 +385,12 @@ func TestHookInjectedTokensAreCharged(t *testing.T) {
 
 	root := t.TempDir()
 	var stdout bytes.Buffer
-	emitChargedHookContext(&stdout, root, "c", "SessionStart", strings.Repeat("x", 400))
+	emitChargedHookContext(&stdout, root, "c", "SessionStart", strings.Repeat("x", 400), nil)
 	if got := readHookSession(root, "c").InjectedTokens; got != savings.Tokens(400) {
 		t.Errorf("injectedTokens after a 400-char note = %d, want %d", got, savings.Tokens(400))
 	}
 	big := strings.Repeat("y", hookContextMaxChars*2)
-	emitChargedHookContext(io.Discard, root, "big", "SessionStart", big)
+	emitChargedHookContext(io.Discard, root, "big", "SessionStart", big, nil)
 	if got, want := readHookSession(root, "big").InjectedTokens, hookContextTokens(big); got != want || want >= savings.Tokens(len(big)) {
 		t.Errorf("injectedTokens for a clipped note = %d, want %d (the clipped size)", got, want)
 	}

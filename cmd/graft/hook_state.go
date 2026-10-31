@@ -26,24 +26,23 @@ type sessionState struct {
 	SavedTokens      int               `json:"savedTokens"`
 	InjectedTokens   int               `json:"injectedTokens,omitzero"` // estimated tokens of every context the hooks emitted
 	InjectedPointers []string          `json:"injectedPointers"`
-	// Prompt retrieval waiting for its turn to end, and how the session's
-	// resolved retrieval turned out.
-	PendingRetrievals      []hookPendingRetrieval `json:"pendingRetrievals,omitempty"`
-	RetrievalsConfirmed    int                    `json:"retrievalsConfirmed,omitzero"`
-	RetrievalsContradicted int                    `json:"retrievalsContradicted,omitzero"`
-	InjectedRevisions      []string               `json:"injectedRevisions,omitempty"`
-	BlastShown             []string               `json:"blastShown,omitempty"`        // "<agent>\x00<file>\x00<hash>", oldest first
-	TranscriptOffsets      map[string]int64       `json:"transcriptOffsets,omitempty"` // bytes already counted, per transcript
-	Nudges                 int                    `json:"nudges"`                      // no longer incremented; kept for the session file format
-	SearchNudges           int                    `json:"searchNudges,omitzero"`
-	TurnUsedGraft          *bool                  `json:"turnUsedGraft,omitempty"`
-	InputCostMicros        *int                   `json:"inputCostMicros,omitempty"`
-	InputTokensBilled      *int                   `json:"inputTokensBilled,omitempty"`
-	LastBillingUUID        *string                `json:"lastBillingUuid,omitempty"`
-	GraftTurns             *int                   `json:"graftTurns,omitempty"`
-	ReportedTurns          *int                   `json:"reportedTurns,omitempty"`
-	LastTallyUUID          *string                `json:"lastTallyUuid,omitempty"`
-	Host                   *string                `json:"host,omitempty"`
+	// Pushed context waiting for evidence, and how the session's resolved
+	// injections turned out per push channel.
+	PendingInjections []hookPendingInjection `json:"pendingInjections,omitempty"`
+	PushTally         map[string]pushTally   `json:"pushTally,omitempty"`
+	InjectedRevisions []string               `json:"injectedRevisions,omitempty"`
+	BlastShown        []string               `json:"blastShown,omitempty"`        // "<agent>\x00<file>\x00<hash>", oldest first
+	TranscriptOffsets map[string]int64       `json:"transcriptOffsets,omitempty"` // bytes already counted, per transcript
+	Nudges            int                    `json:"nudges"`                      // no longer incremented; kept for the session file format
+	SearchNudges      int                    `json:"searchNudges,omitzero"`
+	TurnUsedGraft     *bool                  `json:"turnUsedGraft,omitempty"`
+	InputCostMicros   *int                   `json:"inputCostMicros,omitempty"`
+	InputTokensBilled *int                   `json:"inputTokensBilled,omitempty"`
+	LastBillingUUID   *string                `json:"lastBillingUuid,omitempty"`
+	GraftTurns        *int                   `json:"graftTurns,omitempty"`
+	ReportedTurns     *int                   `json:"reportedTurns,omitempty"`
+	LastTallyUUID     *string                `json:"lastTallyUuid,omitempty"`
+	Host              *string                `json:"host,omitempty"`
 }
 
 // netSavedTokens is what the session saved less what the hooks injected; a

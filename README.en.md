@@ -176,7 +176,7 @@ The harness ran three variants of the same Claude Sonnet 5 agent with the same f
 
 Graft never answered worse than cold, on any corpus. The pull variant gave up most of that speed for something bigger: correctness jumped to 98%, +5 points over cold, the strongest single result in the sweep. Push when speed is what you need; pull when being right matters more.
 
-Graft now decides per repository whether to keep pushing prompt context (see adaptive prompt context below), so a benchmark that reuses a `graft/` directory across arms should delete `graft/.cache/push-ledger-*.json` between them; otherwise one arm inherits the other's decision.
+Graft now decides per repository whether to keep pushing each kind of context (see adaptive context below), so a benchmark that reuses a `graft/` directory across arms should delete `graft/.cache/push-ledger-*.json` between them; otherwise one arm inherits the other's decision.
 
 ---
 
@@ -401,7 +401,7 @@ Codex gets four hooks in `~/.codex/hooks.json`: session-start orientation, promp
 - **context on tap** — a prompt that names code gets up to three matching nodes: the top one inlined when it is a strong match, the rest as pointers. A prompt gets them only when it shares a word of three or more letters with the top hit's name and the match is not weak; a node already sent to that agent is not sent again, a monorepo answer narrows to the sub-project of the last edited file, the note stays under 9,000 characters, and task notifications and agent messages get none. Editing a file surfaces what depends on it ("blast radius"). New sessions, on startup, resume and after compaction, start with the repo map, or, when Claude Code runs graft's MCP server, with one line pointing at its tools, which the server's own instructions already describe; a session that starts after a branch switch left indexed files missing also gets a stale warning. Subagents start with the same note, since Claude Code gives them no session-start context and an Explore subagent no CLAUDE.md
 - **a search nudge** — once per session, after a Grep or a recursive `grep`, `git grep`, `rg`, `ag` or `ack` over indexed code, the hook names the equivalent `graft_find_all` call; searches of `graft/`, of paths outside the repo, or of piped output get no note
 - **token accounting** — every graft query records the tokens it saved (the size of the files it covered minus its answer); the hooks credit them to the session and price them from the session's billed input, and the statusline and `graft stats` show the result. Everything the hooks inject themselves (the start-of-session map, prompt context, nudges, blast radii) is charged as a cost, so the saving shown is net. Prompt context counts as saved only once the turn's end shows the agent used it: it read, edited, or asked graft about an injected file or symbol, or named one in its reply
-- **adaptive prompt context** — per repository and agent, graft keeps `graft/.cache/push-ledger-<agent>.json` (`claude`, `codex`), so one agent's sessions never switch prompt context off for another: each session that received prompt context is scored as confirming (it was used) or contradicting (the agent looked elsewhere), newer sessions weighing more (decay 0.8). When the score turns negative, graft stops injecting prompt context in that repository; MCP tools and the CLI answer as before. Every fifth new session after that gets prompt context again as a re-audit, so the repository can earn it back. The file holds no prompts, code, or paths; delete it to reset the decision
+- **adaptive context** — per repository and agent, graft keeps `graft/.cache/push-ledger-<agent>.json` (`claude`, `codex`, `cursor`), so one agent's sessions never switch context off for another. Each kind of context the hooks push is scored on its own: prompt context (used when the agent reads, edits or asks graft about an injected file or symbol), the session-start orientation and a subagent's orientation (used when the agent's first exploration call is a graft call rather than Grep, Glob or Read), the search nudge (used when the agent's next call is graft rather than another raw search), and the post-edit blast radius (used when the agent later touches a listed dependent). A session that received a kind of context scores it as confirming or contradicting, newer sessions weighing more (decay 0.8). When a kind's score turns negative, graft stops injecting that kind in that repository; the others, the stale-index banner, MCP tools and the CLI are unaffected. Every fifth new session after that gets it again as a re-audit, so the repository can earn it back. The file holds no prompts, code, or paths; delete it to reset every decision
 
 <p align="center">
   <img src="assets/graft-hooks-demo.gif" alt="How Claude Code hooks wire graft in: install, graft init, then the hooks loop (session start, user prompt, post tool use, stop) keeps the graph built, read, and fresh automatically" width="820"/>
@@ -531,9 +531,11 @@ ignored, so `ensure_fresh_graph` finds `EnsureFreshGraph`.
 `graft stats` shows the current session: graft reads against source reads
 (Read, Grep, Glob), the share of graft, the tokens saved, the tokens graft's
 hooks added, the net saving and, once the session's billed input is known, its
-estimated value, the repository's prompt-context state (`on`, `off` with the
+estimated value, the state of each adaptive context channel (`push
+retrieval`, `orientation`, `subagents`, `nudge`, `blast`: `on`, `off` with the
 score and the new sessions until the next re-audit, or `re-audit`), plus the
-last query. `--json` prints the recorded session as is, with a `push` object.
+last query. `--json` prints the recorded session as is, with a `push` object
+keyed by channel.
 The numbers are estimates, not a bill.
 
 `ask` prefers production code over fixture, generated, and vendored copies —

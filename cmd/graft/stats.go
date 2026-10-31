@@ -63,11 +63,16 @@ func runStats(opts callersOptions, stdout, stderr io.Writer) int {
 			value, _ := spread.Get(key)
 			merged.Set(key, value)
 		}
-		state, support, untilReaudit := statsPushState(root, statsSessionHost(values), id)
+		ledger := readPushLedger(root, statsSessionHost(values))
 		push := jsonjs.NewObject()
-		push.Set("state", state)
-		push.Set("support", support)
-		push.Set("untilReaudit", float64(untilReaudit))
+		for _, channel := range pushChannels {
+			state, support, untilReaudit := statsPushState(ledger, channel, id)
+			entry := jsonjs.NewObject()
+			entry.Set("state", state)
+			entry.Set("support", support)
+			entry.Set("untilReaudit", float64(untilReaudit))
+			push.Set(channel, entry)
+		}
 		merged.Set("push", push)
 		if _, err := fmt.Fprintln(stdout, jsonjs.Stringify(merged, 2)); err != nil {
 			return 1
@@ -96,12 +101,18 @@ func runStats(opts callersOptions, stdout, stderr io.Writer) int {
 	if usd, ok := savings.DollarsSaved(saved-injected, readNumber("inputCostMicros"), readNumber("inputTokensBilled")); ok && saved > injected {
 		lines = append(lines, "  value saved:   ~"+savings.FormatDollars(usd))
 	}
-	state, support, untilReaudit := statsPushState(root, statsSessionHost(values), id)
-	switch state {
-	case "off":
-		lines = append(lines, fmt.Sprintf("  prompt push:   off (support %s, re-audit in %d new sessions)", jsonjs.FormatNumber(support), untilReaudit))
-	default:
-		lines = append(lines, fmt.Sprintf("  prompt push:   %s (support %s)", state, jsonjs.FormatNumber(support)))
+	ledger := readPushLedger(root, statsSessionHost(values))
+	labels := map[string]string{
+		pushRetrieval: "retrieval", pushOrientation: "orientation", pushSubagentOrientation: "subagents",
+		pushNudge: "nudge", pushBlast: "blast",
+	}
+	for _, channel := range pushChannels {
+		state, support, untilReaudit := statsPushState(ledger, channel, id)
+		value := fmt.Sprintf("%s (support %s)", state, jsonjs.FormatNumber(support))
+		if state == "off" {
+			value = fmt.Sprintf("off (support %s, re-audit in %d new sessions)", jsonjs.FormatNumber(support), untilReaudit)
+		}
+		lines = append(lines, fmt.Sprintf("  %-18s%s", "push "+labels[channel]+":", value))
 	}
 	var lastQuery string
 	if json.Unmarshal(values["lastQuery"], &lastQuery) == nil && lastQuery != "" {
@@ -123,20 +134,20 @@ func statsSessionHost(values map[string]json.RawMessage) string {
 	return host
 }
 
-// statsPushState reports whether prompt retrieval is pushed for session id:
-// "on", "off", or "re-audit" for a session pushed while support is negative,
-// with the support rounded for display and, when off, the new sessions left
-// until the next re-audit.
-func statsPushState(root, host, id string) (state string, support float64, untilReaudit int) {
-	ledger := readPushLedger(root, host)
-	support = math.Round(ledger.support()*1000) / 1000
+// statsPushState reports whether the ledger's channel is pushed for session
+// id: "on", "off", or "re-audit" for a session pushed while support is
+// negative, with the support rounded for display and, when off, the new
+// sessions left until the next re-audit.
+func statsPushState(ledger pushLedger, channel, id string) (state string, support float64, untilReaudit int) {
+	counts := ledger.channel(channel)
+	support = math.Round(counts.support()*1000) / 1000
 	switch {
-	case ledger.support() >= 0:
+	case counts.support() >= 0:
 		return "on", support, 0
-	case slices.Contains(ledger.Audit, id):
+	case slices.Contains(counts.Audit, id):
 		return "re-audit", support, 0
 	default:
-		return "off", support, ledger.sessionsUntilReaudit()
+		return "off", support, counts.sessionsUntilReaudit()
 	}
 }
 

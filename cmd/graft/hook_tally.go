@@ -158,7 +158,9 @@ func parseHookTranscript(data string) []hookTranscriptEntry {
 // countHookTranscriptTools adds the tool calls a transcript gained since the
 // session last read it to the session's graft and source-read counts. Only
 // complete lines are consumed, and a transcript that shrank is read afresh.
-func countHookTranscriptTools(root, id, path string) {
+// Each call is also evidence for the pending injections of agent, the
+// subagent's agent_id or "" for the main transcript.
+func countHookTranscriptTools(root, id, path, agent string) {
 	if path == "" {
 		return
 	}
@@ -195,8 +197,13 @@ func countHookTranscriptTools(root, id, path string) {
 				input, _ := use["input"].(map[string]any)
 				command, _ := input["command"].(string)
 				kind := classifyHookToolUse(name, command)
-				if len(session.PendingRetrievals) > 0 {
-					markHookRetrievalTouches(session, kind == hookToolGraft, input)
+				if len(session.PendingInjections) > 0 {
+					callID, _ := use["id"].(string)
+					search := false
+					if slices.ContainsFunc(session.PendingInjections, func(pending hookPendingInjection) bool { return pending.Channel == pushNudge }) {
+						_, search = hookRawSearch(root, root, name, input)
+					}
+					markHookInjections(session, agent, callID, kind, search, input)
 				}
 				switch kind {
 				case hookToolGraft:

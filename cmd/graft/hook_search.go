@@ -24,36 +24,24 @@ type hookSearch struct {
 
 // hookSearchNudge returns the note pointing a raw recursive search over this
 // repo's indexed code at the graft_find_all call that answers it, or "" when
-// the call was no such search or the session has had its share of notes.
-func hookSearchNudge(input hookInput, root string) string {
+// the call was no such search, the session has had its share of notes, or the
+// host's nudge channel is off.
+func hookSearchNudge(input hookInput, root, host string) string {
 	if !mcpGraphAvailable(hookContextDir(root)) {
 		return ""
 	}
-	cwd := cmp.Or(input.string("cwd"), root)
-	toolInput := input.object("tool_input")
-	var search hookSearch
-	ok := false
-	switch input.string("tool_name") {
-	case "Grep":
-		pattern, _ := toolInput["pattern"].(string)
-		path, _ := toolInput["path"].(string)
-		var paths []string
-		if path != "" {
-			paths = []string{path}
-		}
-		search, ok = hookSearchScope(root, cwd, hookSearch{Pattern: pattern, IgnoreCase: toolInput["-i"] == true}, paths)
-	case "Bash", "Shell":
-		command, _ := toolInput["command"].(string)
-		if command == "" {
-			command, _ = toolInput["cmd"].(string)
-		}
-		search, ok = parseHookSearchCommand(root, cwd, command)
+	search, ok := hookRawSearch(root, cmp.Or(input.string("cwd"), root), input.string("tool_name"), input.object("tool_input"))
+	if !ok {
+		return ""
 	}
-	if !ok || search.Pattern == "" {
+	// The allowance is spent only on a nudge that is shown, so an off
+	// channel leaves it for a later re-audit.
+	id := hookSessionID(input)
+	if readHookSession(root, id).SearchNudges >= hookSearchNudgeLimit || !hookPushAllowed(root, host, id, pushNudge) {
 		return ""
 	}
 	allowed := false
-	_ = updateHookSession(root, hookSessionID(input), func(session *sessionState) bool {
+	_ = updateHookSession(root, id, func(session *sessionState) bool {
 		if session.SearchNudges >= hookSearchNudgeLimit {
 			return false
 		}
@@ -69,6 +57,30 @@ func hookSearchNudge(input hookInput, root string) string {
 		"the same regex over every indexed file, each hit grouped by its enclosing symbol with file:line and ranked by coupling, "+
 		"in fewer tokens than raw grep output. For how or where something works, use graft_find_code; for who calls a symbol, "+
 		"graft_trace_calls. Raw grep stays right for files graft does not index.", args)
+}
+
+// hookRawSearch restates a Grep call or a shell search over this repo's
+// indexed code as graft_find_all arguments.
+func hookRawSearch(root, cwd, toolName string, toolInput map[string]any) (hookSearch, bool) {
+	var search hookSearch
+	ok := false
+	switch toolName {
+	case "Grep":
+		pattern, _ := toolInput["pattern"].(string)
+		path, _ := toolInput["path"].(string)
+		var paths []string
+		if path != "" {
+			paths = []string{path}
+		}
+		search, ok = hookSearchScope(root, cwd, hookSearch{Pattern: pattern, IgnoreCase: toolInput["-i"] == true}, paths)
+	case "Bash", "Shell":
+		command, _ := toolInput["command"].(string)
+		if command == "" {
+			command, _ = toolInput["cmd"].(string)
+		}
+		search, ok = parseHookSearchCommand(root, cwd, command)
+	}
+	return search, ok && search.Pattern != ""
 }
 
 // hookSearchScope narrows search to the one directory paths name, resolved
