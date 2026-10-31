@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	jsonv2 "encoding/json/v2"
@@ -289,11 +290,19 @@ func classifyAndScoreHookUse(toolName, command string, payload any) hookToolUse 
 // nudges a raw search over indexed code toward graft. Tool counts are not kept
 // here: they come from the transcript when the turn or subagent stops.
 func handleHookToolUse(input hookInput, root string, stdout io.Writer) {
+	// Codex and opencode report every shell result, failures included, here;
+	// Claude Code's failures reach graft only through its transcript.
+	if hookHost(input) != hookHostClaude {
+		observeHookShell(input, root)
+		return
+	}
 	creditHookPendingSavings(root, hookSessionID(input))
-	if note := hookSearchNudge(input, root, hookHost(input)); note != "" {
+	note := hookSearchNudge(input, root, hookHost(input))
+	if note != "" {
 		pending := hookPendingInjection{Channel: pushNudge, Agent: input.string("agent_id"), After: input.string("tool_use_id")}
 		emitChargedHookContext(stdout, root, hookSessionID(input), "PostToolUse", note, &pending)
 	}
+	hookLoopGuard(input, root, stdout, note == "")
 }
 
 func handleHookCursorPostTool(input hookInput, root string, stdout io.Writer) {
@@ -448,17 +457,21 @@ func creditHookPendingSavings(root, id string) {
 
 // resolveHookTurnInjections settles the pending injections decides selects
 // and records the session's outcome per channel in the push ledger.
-func resolveHookTurnInjections(root, id, host, reply string, decides func(hookPendingInjection) bool) {
+func resolveHookTurnInjections(root, id, host, reply string, withTools bool, decides func(hookPendingInjection) bool) {
 	var tally map[string]pushTally
+	var tools []string
 	_ = updateHookSession(root, id, func(session *sessionState) bool {
+		if withTools {
+			tools = slices.Clone(session.GraftTools)
+		}
 		if !resolveHookInjections(session, reply, decides) {
 			return false
 		}
 		tally = maps.Clone(session.PushTally)
 		return true
 	})
-	if tally != nil {
-		recordPushOutcomes(root, host, id, tally)
+	if tally != nil || len(tools) > 0 {
+		recordPushOutcomes(root, host, id, tally, tools)
 	}
 }
 
@@ -484,13 +497,15 @@ func handleHookStop(input hookInput, root string) {
 		if transcript := input.string("agent_transcript_path"); transcript != input.string("transcript_path") {
 			agent := input.string("agent_id")
 			countHookTranscriptTools(root, id, transcript, agent)
-			resolveHookTurnInjections(root, id, hookHost(input), "", func(pending hookPendingInjection) bool {
+			foldMicroskills(root, id)
+			resolveHookTurnInjections(root, id, hookHost(input), "", false, func(pending hookPendingInjection) bool {
 				return pending.Channel == pushSubagentOrientation && pending.Agent == agent
 			})
 		}
 		return
 	}
 	countHookTranscriptTools(root, id, input.string("transcript_path"), "")
+	foldMicroskills(root, id)
 	entries := hookTranscriptEntries(input.string("transcript_path"))
 	sampleHookTurnCost(root, id, entries)
 	countHookTallyTurn(root, id, entries)
@@ -498,7 +513,7 @@ func handleHookStop(input hookInput, root string) {
 	if turn := lastHookAssistantTurn(entries); turn != nil {
 		reply = turn.Text
 	}
-	resolveHookTurnInjections(root, id, hookHost(input), reply, hookMainTurnDecides)
+	resolveHookTurnInjections(root, id, hookHost(input), reply, true, hookMainTurnDecides)
 	stats := readHookStats(root)
 	if stats == nil || !stats.Dirty {
 		return
@@ -774,6 +789,13 @@ func handleHookPrompt(ctx context.Context, input hookInput, root string, stdout,
 	}
 	agent, _ := input.object("agent")["name"].(string)
 	agentContext := hookAgentContext(input)
+	var facts []microskill
+	if !microskillsDisabled() {
+		facts = readMicroskills(root)
+	}
+	if !slices.ContainsFunc(facts, microskill.injectable) || !hookPushAllowed(root, host, hookSessionID(input), pushMicroskills) {
+		facts = nil
+	}
 	text := ""
 	remember := func(session *sessionState) bool {
 		session.LastQuery = &prompt
@@ -784,6 +806,18 @@ func handleHookPrompt(ctx context.Context, input hookInput, root string, stdout,
 			session.PerAgentQuery[agent] = prompt
 		}
 		text = relevantHookRetrieval(&result, session, 3, agentContext)
+		if text != "" && facts != nil {
+			// Facts join the retrieval when it reaches a directory they are
+			// scoped to.
+			retrieval := session.PendingInjections[len(session.PendingInjections)-1]
+			inScope := func(scope string) bool {
+				return slices.ContainsFunc(retrieval.Files, func(file string) bool { return scopeHolds(scope, file) })
+			}
+			if block := claimMicroskills(session, facts, inScope); block != "" {
+				text += "\n\n" + block
+				session.InjectedTokens += hookContextTokens(block)
+			}
+		}
 		return true
 	}
 	id := hookSessionID(input)
@@ -823,6 +857,10 @@ func runHook(ctx context.Context, event string, user bool, shim string, stdin io
 	if hookYieldsToProject(user, shim, root, input) {
 		return
 	}
+	if hookHost(input) == hookHostOpencode {
+		runOpencodeHook(event, input, root, stdout)
+		return
+	}
 
 	switch event {
 	case "session-start":
@@ -846,11 +884,11 @@ func runHook(ctx context.Context, event string, user bool, shim string, stdin io
 		} else {
 			orientation = banner
 		}
-		if orientation != "" {
-			if note != "" {
+		for _, part := range []string{orientation, hookMicroskillsForSession(root, hookHost(input), id, input.string("cwd"))} {
+			if part != "" && note != "" {
 				note += "\n\n"
 			}
-			note += orientation
+			note += part
 		}
 		if note != "" {
 			emitChargedHookContext(stdout, root, id, "SessionStart", note, pending)
@@ -920,4 +958,72 @@ func runHookStatusline(stdin io.Reader, stdout io.Writer) {
 	}
 	stats, repos := resolveHookStats(root)
 	_, _ = io.WriteString(stdout, strings.Join(renderHookStatusline(stats, repos, &session, contextPercent), "\n"))
+}
+
+// runOpencodeHook handles the events the opencode plugin forwards, which
+// carry micro-skills only: facts at session start, shell outcomes from the
+// tool hook, and the fold and resolution at turn end.
+func runOpencodeHook(event string, input hookInput, root string, stdout io.Writer) {
+	id := hookSessionID(input)
+	switch event {
+	case "session-start":
+		if text := hookMicroskillsForSession(root, hookHostOpencode, id, input.string("cwd")); text != "" {
+			emitChargedHookContext(stdout, root, id, "SessionStart", text, nil)
+		}
+	case "tool-savings":
+		observeHookShell(input, root)
+	case "stop":
+		foldMicroskills(root, id)
+		resolveHookTurnInjections(root, id, hookHostOpencode, "", false, func(pending hookPendingInjection) bool {
+			return pending.Channel == pushMicroskills
+		})
+	}
+}
+
+// observeHookShell records a tool hook's Bash call and its result as a shell
+// observation of the session.
+func observeHookShell(input hookInput, root string) {
+	if microskillsDisabled() || !slices.Contains(hookShellTools, strings.ToLower(input.string("tool_name"))) {
+		return
+	}
+	toolInput := input.object("tool_input")
+	command := hookShellCommand(toolInput["command"])
+	if command == "" {
+		command = hookShellCommand(toolInput["cmd"])
+	}
+	workdir, _ := toolInput["workdir"].(string)
+	text, failed := shellResponseOutcome(input["tool_response"])
+	observation, ok := newShellObservation(root, input.string("agent_id"), input.string("tool_use_id"), command,
+		cmp.Or(workdir, input.string("cwd")), text, failed)
+	if !ok {
+		return
+	}
+	facts := readMicroskills(root)
+	_ = updateHookSession(root, hookSessionID(input), func(session *sessionState) bool {
+		recordShellObservation(session, observation, facts)
+		return true
+	})
+}
+
+// hookShellTools are the names a host's shell tool reaches the tool hook
+// under: Codex reports its exec tools under several (TokenEconomizer's list).
+var hookShellTools = []string{"bash", "shell", "exec_command", "local_shell", "unified_exec", "container.exec"}
+
+// hookShellCommand is a tool input's command, given as a string or argv.
+func hookShellCommand(value any) string {
+	switch value := value.(type) {
+	case string:
+		return value
+	case []any:
+		words := make([]string, 0, len(value))
+		for _, word := range value {
+			text := fmt.Sprint(word)
+			if strings.ContainsAny(text, " \t'\"") {
+				text = "'" + strings.ReplaceAll(text, "'", `'\''`) + "'"
+			}
+			words = append(words, text)
+		}
+		return strings.Join(words, " ")
+	}
+	return ""
 }

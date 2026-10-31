@@ -216,6 +216,8 @@ func dispatchWithInput(ctx context.Context, parsed invocation, stdin io.Reader, 
 		return runCheck(opts, stdout, stderr)
 	case "stats":
 		return runStats(opts, stdout, stderr)
+	case "microskills":
+		return runMicroskills(opts, stdout, stderr)
 	case "blast":
 		return runBlast(opts, stdout, stderr)
 	case "callers":

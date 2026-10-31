@@ -93,6 +93,15 @@
       "effects": ["reads <K>/session/*.json only"]
     },
     {
+      "name": "microskills",
+      "usage": "graft microskills [options] [dir]",
+      "options": ["--all", "--json"],
+      "backend": "go",
+      "stdout": "validated facts (with --all also candidate and retired) each with id, status, scope, firing, support, injected sessions and tokens, avoided tokens, instruction and evidence, or a single line when none is learned; --json prints `{version, facts}` with every stored field",
+      "exit": { "0": "always, including none learned" },
+      "effects": ["reads <K>/microskills.json only"]
+    },
+    {
       "name": "mcp",
       "usage": "graft mcp [options] [dir]",
       "options": [],
@@ -225,6 +234,7 @@
         "home (MCP, unless --no-mcp or --no-global): ~/.codex/config.toml (only when ~/.codex exists), ~/.gemini/config/mcp_config.json",
         "home (hooks, unless --no-hooks or --no-global): ~/.codex/hooks.json hooks as `\"<graft binary>\" _hook <sub>` (only when ~/.codex exists); legacy ~/.codex/hooks/graft/graft-hooks.cjs deleted when graft wrote it",
         "repo (hooks, unless --no-hooks; not affected by --no-global): .cursor/hooks.json hooks as `graft _hook <sub>`; legacy .cursor/hooks/graft-hooks.cjs deleted when graft wrote it",
+        "repo (agents hooks, unless --no-hooks; not affected by --no-global or --no-mcp): owned .opencode/plugins/graft.ts that forwards opencode events to `graft _hook <sub>` (only when ~/.config/opencode exists)",
         "home (antigravity, unless --no-global; not affected by --no-hooks): ~/.gemini/skills/graft/SKILL.md",
         "repo: <K>/wiring-stamp.json with version, host ids and global/mcp/hooks/statusline options",
         "dry-run plan: the writes a run with these flags would make — --no-mcp and --no-hooks drop the other hosts' MCP registrations and hooks, --no-global every machine-wide write; Claude Code keeps its own MCP server and hooks",
@@ -241,7 +251,7 @@
       "exit": { "0": "always; unparseable files are reported and left as-is" },
       "effects": [
         "none without -y (still probes `graft --version`)",
-        "-y: owned instruction files deleted with empty parents pruned, fenced sections (including the legacy brain block) removed, MCP keys and TOML tables removed, the Claude repo layer removed, graft's entries in the repo-level .cursor/hooks.json removed (the file kept while it holds other entries, deleted when nothing is left)",
+        "-y: owned instruction files deleted with empty parents pruned, fenced sections (including the legacy brain block) removed, MCP keys and TOML tables removed, the Claude repo layer removed, graft's entries in the repo-level .cursor/hooks.json removed (the file kept while it holds other entries, deleted when nothing is left), .opencode/plugins/graft.ts deleted when it starts with graft's ownership marker",
         "-y, unless --no-global: ~/.claude* entries, Codex hooks, the Antigravity skill",
         "-y, unless --keep-cache: <R>/graft (hardcoded, ignores --dir/GRAFT_DIR) and the graft lines in .gitignore/.ignore",
         "never removed: <R>/.graft/config.json, the /.graft/ gitignore line, ~/.graft/*, legacy shims with content graft did not write"
@@ -295,6 +305,7 @@
     "GRAFT_NO_GITIGNORE": { "scope": "cli", "effect": "skip the graft .gitignore entry" },
     "GRAFT_NO_IGNORE": { "scope": "cli", "effect": "skip the .ignore re-admit entries" },
     "GRAFT_NO_LSP": { "scope": "cli", "effect": "skip language-server enrichment in graft build" },
+    "GRAFT_NO_MICROSKILLS": { "scope": "hook", "effect": "hooks record no shell outcomes, update no micro-skills and inject none; `graft microskills` still reports the store" },
     "GRAFT_NO_REFRESH": { "scope": "cli", "effect": "disable pre-query refresh" },
     "GRAFT_NO_SEED": { "scope": "cli", "effect": "disable worktree graph seeding" },
     "GRAFT_NO_STATUSLINE": { "scope": "cli", "effect": "omit the Claude statusLine block" },

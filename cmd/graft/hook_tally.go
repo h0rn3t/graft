@@ -28,6 +28,7 @@ type hookTranscriptEntry struct {
 	UUID        *string               `json:"uuid"`
 	IsSidechain bool                  `json:"isSidechain"`
 	IsMeta      bool                  `json:"isMeta"`
+	Cwd         string                `json:"cwd"`
 	Message     hookTranscriptMessage `json:"message"`
 }
 
@@ -186,16 +187,30 @@ func countHookTranscriptTools(root, id, path, agent string) {
 		if complete == 0 {
 			return false
 		}
+		observe := !microskillsDisabled()
+		var facts []microskill
+		factsRead := false
 		for _, entry := range parseHookTranscript(string(data[:complete])) {
 			blocks, _ := entry.Message.Content.([]any)
 			for _, block := range blocks {
 				use, _ := block.(map[string]any)
+				if observe && use["type"] == "tool_result" {
+					if !factsRead && slices.ContainsFunc(session.PendingInjections, func(pending hookPendingInjection) bool { return pending.Channel == pushMicroskills }) {
+						facts, factsRead = readMicroskills(root), true
+					}
+					observeHookShellResult(session, root, agent, use, facts)
+					continue
+				}
 				if use["type"] != "tool_use" {
 					continue
 				}
 				name, _ := use["name"].(string)
 				input, _ := use["input"].(map[string]any)
 				command, _ := input["command"].(string)
+				if observe && name == "Bash" && command != "" {
+					callID, _ := use["id"].(string)
+					session.ShellCalls = keepLast(append(session.ShellCalls, pendingShellCall{ID: callID, Command: command, Cwd: entry.Cwd}), shellCallLimit)
+				}
 				kind := classifyHookToolUse(name, command)
 				if len(session.PendingInjections) > 0 {
 					callID, _ := use["id"].(string)
@@ -204,6 +219,11 @@ func countHookTranscriptTools(root, id, path, agent string) {
 						_, search = hookRawSearch(root, root, name, input)
 					}
 					markHookInjections(session, agent, callID, kind, search, input)
+				}
+				if tool, ok := graftMCPToolName(name); ok {
+					if i, found := slices.BinarySearch(session.GraftTools, tool); !found {
+						session.GraftTools = slices.Insert(session.GraftTools, i, tool)
+					}
 				}
 				switch kind {
 				case hookToolGraft:
@@ -366,4 +386,23 @@ func lastHookTurnBilling(entries []hookTranscriptEntry) *hookTurnBilling {
 		return nil
 	}
 	return &hookTurnBilling{UUID: *uuid, CostMicros: costMicros, Tokens: tokens}
+}
+
+// shellCallLimit bounds the Bash calls a session waits on for a result.
+const shellCallLimit = 32
+
+// observeHookShellResult turns a transcript tool_result of a pending Bash
+// call into an observation of the session.
+func observeHookShellResult(session *sessionState, root, agent string, result map[string]any, facts []microskill) {
+	id, _ := result["tool_use_id"].(string)
+	i := slices.IndexFunc(session.ShellCalls, func(call pendingShellCall) bool { return call.ID == id })
+	if id == "" || i < 0 {
+		return
+	}
+	call := session.ShellCalls[i]
+	session.ShellCalls = slices.Delete(session.ShellCalls, i, i+1)
+	failed, _ := result["is_error"].(bool)
+	if observation, ok := newShellObservation(root, agent, call.ID, call.Command, call.Cwd, shellResultText(result["content"]), failed); ok {
+		recordShellObservation(session, observation, facts)
+	}
 }

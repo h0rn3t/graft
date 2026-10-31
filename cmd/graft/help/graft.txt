@@ -25,6 +25,9 @@ Commands:
                                     (for CI)
   stats [options] [dir]             Show this agent session's graft-vs-source
                                     usage mix and tokens saved
+  microskills [options] [dir]       List the repository facts graft learned
+                                    from agents' failed and repaired shell
+                                    commands
   mcp [dir]                         Serve the graph over MCP (stdio) — exposes
                                     graft_find_code, graft_trace_calls,
                                     graft_find_all, graft_file_api, graft_read_symbol,

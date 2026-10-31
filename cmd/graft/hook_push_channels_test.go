@@ -17,7 +17,7 @@ import (
 func contradictChannel(t *testing.T, root, host, channel string) {
 	t.Helper()
 	for _, id := range []string{"bad1-" + channel, "bad2-" + channel} {
-		recordPushOutcomes(root, host, id, map[string]pushTally{channel: {Contradicted: 1}})
+		recordPushOutcomes(root, host, id, map[string]pushTally{channel: {Contradicted: 1}}, nil)
 	}
 	if got := readPushLedger(root, host).Channels[channel].support(); got >= 0 {
 		t.Fatalf("%s support after two contradicting sessions = %v, want negative", channel, got)
@@ -106,7 +106,7 @@ func TestPushNewSessionCountsOnceAcrossChannels(t *testing.T) {
 
 	// Two confirmations lift blast from -1.8 to 0.648; only its counters reset.
 	for _, id := range []string{"good1", "good2"} {
-		recordPushOutcomes(root, hookHostClaude, id, map[string]pushTally{pushBlast: {Confirmed: 1}})
+		recordPushOutcomes(root, hookHostClaude, id, map[string]pushTally{pushBlast: {Confirmed: 1}}, nil)
 	}
 	hookPushAllowed(root, hookHostClaude, "s6", pushOrientation)
 	ledger = readPushLedger(root, hookHostClaude)
@@ -124,7 +124,7 @@ func TestRecordPushOutcomesSeveralChannels(t *testing.T) {
 		pushRetrieval: {Confirmed: 1},
 		pushBlast:     {Contradicted: 2},
 		pushNudge:     {},
-	})
+	}, nil)
 	ledger := readPushLedger(root, hookHostClaude)
 	for channel, want := range map[string][]pushOutcome{
 		pushRetrieval: {{ID: "s", Outcome: 1}},
@@ -444,5 +444,47 @@ func TestHookSearchNudgeRespectsPush(t *testing.T) {
 	}
 	if got := readHookSession(root, "s").PendingInjections; len(got) != 1 || got[0].Channel != pushNudge {
 		t.Errorf("pending after a nudge = %+v, want one nudge", got)
+	}
+}
+
+func TestHookWalkRecordsGraftTools(t *testing.T) {
+	root := indexedHookRepo(t)
+	main := filepath.Join(t.TempDir(), "main.jsonl")
+	appendToolCalls(t, main,
+		toolCall{"1", "mcp__graft__graft_find_code", map[string]any{"query": "x"}},
+		toolCall{"2", "mcp__graft__graft_find_code", map[string]any{"query": "y"}},
+		toolCall{"3", "mcp__graft__graft_map", map[string]any{}},
+		toolCall{"4", "Bash", map[string]any{"command": "graft ask auth"}},
+		toolCall{"5", "Read", map[string]any{"file_path": "/repo/a.go"}},
+	)
+	agent := filepath.Join(t.TempDir(), "agent.jsonl")
+	appendToolCalls(t, agent, toolCall{"6", "graft_trace_calls", map[string]any{"symbol": "x"}})
+	countHookTranscriptTools(root, "s", main, "")
+	countHookTranscriptTools(root, "s", agent, "a1")
+	want := []string{"graft_find_code", "graft_repo_map", "graft_trace_calls"}
+	if got := readHookSession(root, "s").GraftTools; !slices.Equal(got, want) {
+		t.Errorf("graftTools after the walks = %v, want %v", got, want)
+	}
+}
+
+func TestHookStopRecordsGraftTools(t *testing.T) {
+	root := indexedHookRepo(t)
+	transcript := filepath.Join(t.TempDir(), "t.jsonl")
+	appendToolCalls(t, transcript, toolCall{"1", "Read", map[string]any{"file_path": "/repo/a.go"}})
+	stopSession(root, transcript)
+	if tools := readPushLedger(root, hookHostClaude).Tools; tools != nil {
+		t.Fatalf("tool record after a turn without graft calls = %+v, want none", tools)
+	}
+	appendToolCalls(t, transcript, toolCall{"2", "mcp__graft__graft_find_all", map[string]any{"pattern": "x"}})
+	stopSession(root, transcript)
+	want := []toolSession{{ID: "s", Used: []string{"graft_find_all"}}}
+	if got := readPushLedger(root, hookHostClaude).Tools; got == nil || fmt.Sprint(got.Sessions) != fmt.Sprint(want) {
+		t.Fatalf("tool record after a graft call = %+v, want %v", got, want)
+	}
+	appendToolCalls(t, transcript, toolCall{"3", "mcp__graft__graft_find_code", map[string]any{"query": "x"}})
+	stopSession(root, transcript)
+	want = []toolSession{{ID: "s", Used: []string{"graft_find_all", "graft_find_code"}}}
+	if got := readPushLedger(root, hookHostClaude).Tools; got == nil || fmt.Sprint(got.Sessions) != fmt.Sprint(want) {
+		t.Errorf("tool record after a second turn = %+v, want %v", got, want)
 	}
 }

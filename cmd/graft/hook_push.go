@@ -32,9 +32,21 @@ const (
 	pushSubagentOrientation = "subagentOrientation"
 	pushNudge               = "nudge"
 	pushBlast               = "blast"
+	pushLoop                = "loop"
+	pushMicroskills         = "microskills"
 )
 
-var pushChannels = []string{pushRetrieval, pushOrientation, pushSubagentOrientation, pushNudge, pushBlast}
+var pushChannels = []string{pushRetrieval, pushOrientation, pushSubagentOrientation, pushNudge, pushBlast, pushLoop, pushMicroskills}
+
+// A graft MCP tool is hidden from tools/list once the last
+// toolAuditSessions recorded sessions that used graft never called it.
+const (
+	toolAuditSessions  = 10
+	toolLedgerSessions = 20
+)
+
+// toolsAlwaysListed are never hidden, whatever the record says.
+var toolsAlwaysListed = []string{"graft_find_code", "graft_read_symbol"}
 
 // hookRawSearchCall marks a nudge's first later call as another raw search.
 const hookRawSearchCall = "search"
@@ -57,6 +69,13 @@ type hookPendingInjection struct {
 	// First is the first deciding call: graft or source for orientation,
 	// graft or search for a nudge.
 	First string `json:"first,omitempty"`
+	// Signature is a loop note's call hash; Repeated marks that the same call
+	// returned the same result again after the note.
+	Signature string `json:"signature,omitempty"`
+	Repeated  bool   `json:"repeated,omitzero"`
+	// Fact is an injected micro-skill's id; First then holds how the agent's
+	// next call of its intent decided it.
+	Fact string `json:"fact,omitempty"`
 }
 
 // pushTally counts a session's resolved injections in one channel.
@@ -88,6 +107,56 @@ type pushLedger struct {
 	Sessions []pushOutcome `json:"sessions,omitempty"`
 	NewSince int           `json:"newSince,omitzero"`
 	Audit    []string      `json:"audit,omitempty"`
+	Tools    *toolRecord   `json:"tools,omitempty"`
+}
+
+// toolRecord is which graft MCP tools recent sessions called, and how many
+// MCP server starts have hidden some of them.
+type toolRecord struct {
+	Sessions []toolSession `json:"sessions,omitempty"` // oldest first
+	Starts   int           `json:"starts,omitzero"`
+}
+
+type toolSession struct {
+	ID   string   `json:"id"`
+	Used []string `json:"used"`
+}
+
+// recordTools sets session id's set of called tools, keeping the newest
+// toolLedgerSessions sessions, and reports whether the ledger changed.
+func (ledger *pushLedger) recordTools(id string, used []string) bool {
+	if ledger.Tools == nil {
+		ledger.Tools = &toolRecord{}
+	}
+	sessions := ledger.Tools.Sessions
+	i := slices.IndexFunc(sessions, func(session toolSession) bool { return session.ID == id })
+	switch {
+	case i < 0:
+		ledger.Tools.Sessions = keepLast(append(sessions, toolSession{ID: id, Used: slices.Clone(used)}), toolLedgerSessions)
+	case !slices.Equal(sessions[i].Used, used):
+		sessions[i].Used = slices.Clone(used)
+	default:
+		return false
+	}
+	return true
+}
+
+// hidden returns the tools of catalog that none of the last toolAuditSessions
+// recorded sessions called, once that many are recorded; it never hides
+// toolsAlwaysListed.
+func (ledger *pushLedger) hidden(catalog []string) []string {
+	if ledger.Tools == nil || len(ledger.Tools.Sessions) < toolAuditSessions {
+		return nil
+	}
+	recent := ledger.Tools.Sessions[len(ledger.Tools.Sessions)-toolAuditSessions:]
+	var hidden []string
+	for _, tool := range catalog {
+		used := slices.ContainsFunc(recent, func(session toolSession) bool { return slices.Contains(session.Used, tool) })
+		if !used && !slices.Contains(toolsAlwaysListed, tool) {
+			hidden = append(hidden, tool)
+		}
+	}
+	return hidden
 }
 
 type pushChannel struct {
@@ -114,15 +183,20 @@ func (ledger *pushLedger) channel(name string) *pushChannel {
 
 // Agent hosts whose hooks push context; each keeps its own ledger.
 const (
-	hookHostClaude = "claude"
-	hookHostCodex  = "codex"
-	hookHostCursor = "cursor"
+	hookHostClaude   = "claude"
+	hookHostCodex    = "codex"
+	hookHostCursor   = "cursor"
+	hookHostOpencode = "opencode"
 )
 
-// hookHost names the agent behind a Claude-style hook from its transcript:
-// Codex writes rollout-*.jsonl, and every other host that reaches these hooks
-// is Claude Code. Cursor's own events name their host themselves.
+// hookHost names the agent behind a Claude-style hook: the opencode plugin
+// says so in graft_host, Codex writes rollout-*.jsonl transcripts, and every
+// other host that reaches these hooks is Claude Code. Cursor's own events
+// name their host themselves.
 func hookHost(input hookInput) string {
+	if input.string("graft_host") == hookHostOpencode {
+		return hookHostOpencode
+	}
 	if strings.HasPrefix(filepath.Base(input.string("transcript_path")), "rollout-") {
 		return hookHostCodex
 	}
@@ -130,7 +204,7 @@ func hookHost(input hookInput) string {
 }
 
 func pushLedgerPath(root, host string) string {
-	if host != hookHostCodex && host != hookHostCursor {
+	if host != hookHostCodex && host != hookHostCursor && host != hookHostOpencode {
 		host = hookHostClaude
 	}
 	return filepath.Join(hookCacheDir(root), "push-ledger-"+host+".json")
@@ -226,10 +300,11 @@ func hookPushAllowed(root, host, id, name string) bool {
 }
 
 // recordPushOutcomes sets session id's single outcome in each channel of
-// tally that resolved more than neutral injections.
-func recordPushOutcomes(root, host, id string, tally map[string]pushTally) {
+// tally that resolved more than neutral injections, and, when tools is not
+// empty, the graft MCP tools the session called.
+func recordPushOutcomes(root, host, id string, tally map[string]pushTally, tools []string) {
 	_ = updatePushLedger(root, host, func(ledger *pushLedger) bool {
-		changed := false
+		changed := len(tools) > 0 && ledger.recordTools(id, tools)
 		for name, counts := range tally {
 			outcome := counts.outcome()
 			if outcome == 0 {
@@ -309,6 +384,8 @@ func markHookInjections(session *sessionState, agent, callID, kind string, searc
 			if pending.First == "" && explores {
 				pending.First = kind
 			}
+		case pushLoop:
+			pending.Explored = true
 		}
 	}
 }
@@ -346,6 +423,20 @@ func (pending hookPendingInjection) outcome(reply string) int {
 		case pending.Touched:
 			return 1
 		case pending.Explored:
+			return -1
+		}
+	case pushLoop:
+		switch {
+		case pending.Repeated:
+			return -1
+		case pending.Explored:
+			return 1
+		}
+	case pushMicroskills:
+		switch pending.First {
+		case microskillConfirmed:
+			return 1
+		case microskillContradicted:
 			return -1
 		}
 	default:

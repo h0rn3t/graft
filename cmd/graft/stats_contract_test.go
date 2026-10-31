@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,7 +90,7 @@ func TestStatsReportsNetAndPush(t *testing.T) {
 
 	// Only the blast-radius channel turns off.
 	for _, id := range []string{"bad1", "bad2"} {
-		recordPushOutcomes(root, hookHostClaude, id, map[string]pushTally{pushBlast: {Contradicted: 1}})
+		recordPushOutcomes(root, hookHostClaude, id, map[string]pushTally{pushBlast: {Contradicted: 1}}, nil)
 	}
 	for _, want := range []string{"push blast:       off (support -1.8, re-audit in 5 new sessions)", "push retrieval:   on (support 0)", "push subagents:   on (support 0)"} {
 		if got := stats(); !strings.Contains(got, want) {
@@ -119,5 +120,66 @@ func TestStatsReportsNetAndPush(t *testing.T) {
 	}
 	if got, want := stats(), "push blast:       on (support 0)"; !strings.Contains(got, "session codex") || !strings.Contains(got, want) {
 		t.Errorf("stats(latest session is codex) = %q, want the codex ledger: %q", got, want)
+	}
+}
+
+func TestStatsReportsHiddenTools(t *testing.T) {
+	t.Setenv("GRAFT_DIR", "")
+	root := t.TempDir()
+	writeFixtureFile(t, root, "graft/.cache/session/s1.json", `{"perAgentQuery":{}}`)
+	stats := func(args ...string) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if got := run(append([]string{"stats", root}, args...), &stdout, &stderr); got != 0 {
+			t.Fatalf("run(stats %v) = %d, stderr %q; want 0", args, got, stderr.String())
+		}
+		return stdout.String()
+	}
+	if got, want := stats(), "  tools:            all listed\n"; !strings.Contains(got, want) {
+		t.Errorf("stats(no tool record) = %q, want %q", got, want)
+	}
+	seedToolRecord(t, root, 2)
+	if got, want := stats(), "  tools:            hidden graft_check_freshness (re-audit in 3 starts)\n"; !strings.Contains(got, want) {
+		t.Errorf("stats(graft_check_freshness unused) = %q, want %q", got, want)
+	}
+	if got, want := stats("--json"), `"tools": {
+    "hidden": [
+      "graft_check_freshness"
+    ],
+    "untilReaudit": 3
+  }`; !strings.Contains(got, want) {
+		t.Errorf("stats(--json, graft_check_freshness unused) = %q, want %q", got, want)
+	}
+}
+
+func TestStatsCountsMicroskills(t *testing.T) {
+	t.Setenv("GRAFT_DIR", "")
+	root := t.TempDir()
+	writeFixtureFile(t, root, "graft/.cache/session/s1.json", `{"perAgentQuery":{},"graftReads":1}`)
+	silent := validatedFact(".", "make lint", "./make lint")
+	for i := range silent.Sessions {
+		silent.Sessions[i].Fired = false
+	}
+	silent.settle()
+	facts := []microskill{validatedFact(".", "ruff format", ".venv/bin/ruff format …"), silent}
+	for i := range 3 {
+		candidate := validatedFact(".", fmt.Sprint("tool", i), "x")
+		candidate.Status = microskillCandidate
+		facts = append(facts, candidate)
+	}
+	writeMicroskills(t, root, facts...)
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"stats", root}, &stdout, &stderr); got != 0 {
+		t.Fatalf("run(stats) = %d, stderr %q", got, stderr.String())
+	}
+	if want := "microskills:      2 validated (1 injectable), 3 candidates"; !strings.Contains(stdout.String(), want) {
+		t.Errorf("stats() = %q, want %q", stdout.String(), want)
+	}
+	stdout.Reset()
+	if got := run([]string{"stats", root, "--json"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("run(stats --json) = %d", got)
+	}
+	if want := "\"microskills\": {\n    \"validated\": 2,\n    \"injectable\": 1,\n    \"candidates\": 3\n  }"; !strings.Contains(stdout.String(), want) {
+		t.Errorf("stats --json = %q, want %q", stdout.String(), want)
 	}
 }

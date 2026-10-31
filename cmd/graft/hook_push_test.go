@@ -59,7 +59,7 @@ func TestPushLedgerFailsOpen(t *testing.T) {
 
 // recordRetrievalOutcome records session id's retrieval tally.
 func recordRetrievalOutcome(root, host, id string, confirmed, contradicted int) {
-	recordPushOutcomes(root, host, id, map[string]pushTally{pushRetrieval: {Confirmed: confirmed, Contradicted: contradicted}})
+	recordPushOutcomes(root, host, id, map[string]pushTally{pushRetrieval: {Confirmed: confirmed, Contradicted: contradicted}}, nil)
 }
 
 // negativeLedger writes a ledger whose support is -1.8 (two contradictions).
@@ -434,5 +434,74 @@ func TestMCPIgnoresPushLedger(t *testing.T) {
 	after := mcpCall(t.Context(), root, dir, "", "graft_find_code", args)
 	if before.isError || after.text != before.text {
 		t.Errorf("mcpCall(graft_find_code) with negative support = %q, want the answer without a ledger %q", after.text, before.text)
+	}
+}
+
+// toolSessions returns n recorded sessions that each called used.
+func toolSessions(n int, used ...string) []toolSession {
+	sessions := make([]toolSession, n)
+	for i := range sessions {
+		sessions[i] = toolSession{ID: fmt.Sprintf("s%d", i), Used: used}
+	}
+	return sessions
+}
+
+func TestPushLedgerHiddenTools(t *testing.T) {
+	catalog := []string{"graft_find_code", "graft_read_symbol", "graft_find_all", "graft_check_freshness"}
+	used := []string{"graft_find_all"}
+	for _, tc := range []struct {
+		name     string
+		sessions []toolSession
+		want     []string
+	}{
+		{"no record", nil, nil},
+		{"nine sessions hide nothing", toolSessions(9, used...), nil},
+		{"ten sessions hide the unused", toolSessions(10, used...), []string{"graft_check_freshness"}},
+		{"protected tools never hide", toolSessions(10), []string{"graft_find_all", "graft_check_freshness"}},
+		{"a use in the last ten keeps a tool", append(toolSessions(10, used...)[:9], toolSession{ID: "x", Used: []string{"graft_check_freshness"}}), nil},
+		{"a use before the last ten does not", append([]toolSession{{ID: "old", Used: []string{"graft_check_freshness"}}}, toolSessions(10, used...)...), []string{"graft_check_freshness"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ledger := pushLedger{}
+			if tc.sessions != nil {
+				ledger.Tools = &toolRecord{Sessions: tc.sessions}
+			}
+			if got := ledger.hidden(catalog); !slices.Equal(got, tc.want) {
+				t.Errorf("hidden(%v) over %d sessions = %v, want %v", catalog, len(tc.sessions), got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPushLedgerRecordTools(t *testing.T) {
+	ledger := pushLedger{}
+	for i := range toolLedgerSessions + 3 {
+		ledger.recordTools(fmt.Sprintf("s%d", i), []string{"graft_find_code"})
+	}
+	if got := ledger.Tools.Sessions; len(got) != toolLedgerSessions || got[0].ID != "s3" {
+		t.Fatalf("after %d sessions the record holds %d starting at %v, want %d starting at s3", toolLedgerSessions+3, len(got), got[0], toolLedgerSessions)
+	}
+	if !ledger.recordTools("s5", []string{"graft_find_all"}) {
+		t.Errorf("recordTools(s5, a new set) = false, want true")
+	}
+	if ledger.recordTools("s5", []string{"graft_find_all"}) {
+		t.Errorf("recordTools(s5, the same set) = true, want false")
+	}
+	i := slices.IndexFunc(ledger.Tools.Sessions, func(session toolSession) bool { return session.ID == "s5" })
+	if got := ledger.Tools.Sessions; len(got) != toolLedgerSessions || !slices.Equal(got[i].Used, []string{"graft_find_all"}) {
+		t.Errorf("after upserting s5 the record holds %d with s5 = %v, want %d with [graft_find_all]", len(got), got[i].Used, toolLedgerSessions)
+	}
+}
+
+func TestPushLedgerKeepsToolsWithoutChannels(t *testing.T) {
+	root := t.TempDir()
+	recordPushOutcomes(root, hookHostClaude, "s", nil, []string{"graft_find_code"})
+	ledger := readPushLedger(root, hookHostClaude)
+	if ledger.Tools == nil || len(ledger.Tools.Sessions) != 1 {
+		t.Fatalf("tool record after recording one session = %+v, want one session", ledger.Tools)
+	}
+	recordPushOutcomes(root, hookHostClaude, "s", map[string]pushTally{pushNudge: {}}, nil)
+	if ledger := readPushLedger(root, hookHostClaude); ledger.Tools == nil || len(ledger.Tools.Sessions) != 1 {
+		t.Errorf("tool record after a neutral channel write = %+v, want it kept", ledger.Tools)
 	}
 }

@@ -77,6 +77,7 @@ func (f *files) installHostHooks(repo string, env Env, ids []string, opts InitOp
 	}{
 		{opts.Hooks && opts.Global && slices.Contains(ids, "agents"), func() ([]ConfigWrite, error) { return f.installCodexHooks(env) }},
 		{opts.Hooks && slices.Contains(ids, "cursor"), func() ([]ConfigWrite, error) { return f.installCursorHooks(repo) }},
+		{opts.Hooks && slices.Contains(ids, "agents"), func() ([]ConfigWrite, error) { return f.installOpencodePlugin(repo, env.Home) }},
 		{opts.Global && slices.Contains(ids, "antigravity"), func() ([]ConfigWrite, error) { return f.installAntigravitySkill(env.Home) }},
 	}
 	for _, step := range steps {

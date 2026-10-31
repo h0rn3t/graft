@@ -348,3 +348,38 @@ func TestClaudeMCPWiredContract(t *testing.T) {
 		})
 	}
 }
+
+func TestInstallCodexHooksKeepsBothPostToolUseEntries(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".codex", "hooks.json")
+	// An earlier version wrote only the edit entry.
+	writeTestFile(t, path, `{"hooks":{"PostToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"\"/old/graft\" _hook post-edit"}]},{"matcher":"x","hooks":[{"type":"command","command":"echo mine"}]}]}}`)
+	for range 2 {
+		f := openFiles(t.TempDir(), home)
+		if _, err := f.installCodexHooks(Env{Home: home, Binary: "/opt/graft", Launch: binLaunch}); err != nil {
+			t.Fatalf("installCodexHooks() error = %v, want nil", err)
+		}
+		f.close()
+	}
+	value, err := jsonjs.Parse([]byte(readTestFile(t, path)))
+	if err != nil {
+		t.Fatalf("jsonjs.Parse(%s) error = %v, want nil", path, err)
+	}
+	root, _ := jsonjs.AsObject(value)
+	hooks, _ := jsonjs.AsObject(mustGet(root, "hooks"))
+	entries, _ := jsonjs.AsArray(mustGet(hooks, "PostToolUse"))
+	var got []string
+	for _, entry := range entries {
+		object, _ := jsonjs.AsObject(entry)
+		handlers, _ := jsonjs.AsArray(mustGet(object, "hooks"))
+		handler, _ := jsonjs.AsObject(handlers[0])
+		got = append(got, mustGet(object, "matcher").(string)+" "+mustGet(handler, "command").(string))
+	}
+	want := []string{"x echo mine", `apply_patch|Write|Edit|MultiEdit "/opt/graft" _hook post-edit`, `Bash|exec|shell "/opt/graft" _hook tool-savings`}
+	if !slices.Equal(got, want) {
+		t.Errorf("Codex PostToolUse after two inits = %q, want %q", got, want)
+	}
+}

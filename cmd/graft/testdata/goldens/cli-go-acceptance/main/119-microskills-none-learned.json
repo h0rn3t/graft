@@ -1,0 +1,13 @@
+{
+  "args": [
+    "microskills"
+  ],
+  "cwd": "<REPO>",
+  "env": {},
+  "inputs": {},
+  "status": 0,
+  "stdout": "graft microskills: none learned yet — facts form when agent sessions here fail at a command and repair it.\n",
+  "stderr": "",
+  "files": {},
+  "checkFiles": false
+}

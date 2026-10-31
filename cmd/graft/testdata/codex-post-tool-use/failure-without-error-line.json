@@ -1,0 +1,15 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "turn_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/capture/codex-home/sessions/rollout-capture.jsonl",
+  "cwd": "/capture/repo",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "python3 -c \"import sys; print('GRAFT_CODEX_CAPTURE_FAILURE', file=sys.stderr); sys.exit(7)\""
+  },
+  "tool_response": "GRAFT_CODEX_CAPTURE_FAILURE\n",
+  "tool_use_id": "call_capture_2"
+}

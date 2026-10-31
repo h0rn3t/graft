@@ -73,6 +73,7 @@ func PlanInit(repo, home string, _ Launch, ids []string) []HostPlan {
 		switch host.ID {
 		case "agents":
 			writes = append(writes, CodexHookTargets(home)...)
+			writes = append(writes, OpencodePluginTargets(repo, home)...)
 		case "cursor":
 			writes = append(writes, CursorHookTargets(repo)...)
 		case "antigravity":

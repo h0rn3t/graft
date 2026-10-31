@@ -1,0 +1,15 @@
+{
+  "args": [
+    "microskills",
+    "--all",
+    "--json"
+  ],
+  "cwd": "<REPO>",
+  "env": {},
+  "inputs": {},
+  "status": 0,
+  "stdout": "{\n  \"version\": 1,\n  \"facts\": []\n}\n",
+  "stderr": "",
+  "files": {},
+  "checkFiles": false
+}

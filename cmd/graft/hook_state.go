@@ -31,18 +31,28 @@ type sessionState struct {
 	PendingInjections []hookPendingInjection `json:"pendingInjections,omitempty"`
 	PushTally         map[string]pushTally   `json:"pushTally,omitempty"`
 	InjectedRevisions []string               `json:"injectedRevisions,omitempty"`
-	BlastShown        []string               `json:"blastShown,omitempty"`        // "<agent>\x00<file>\x00<hash>", oldest first
+	BlastShown        []string               `json:"blastShown,omitempty"`     // "<agent>\x00<file>\x00<hash>", oldest first
+	GraftTools        []string               `json:"graftTools,omitempty"`     // graft MCP tools the session called, sorted
+	LoopSignatures    []string               `json:"loopSignatures,omitempty"` // "<agent>\x00<hash>" of recent Bash and Grep calls, oldest first
+	LoopNoted         []string               `json:"loopNoted,omitempty"`      // signature hashes that got a loop note
+	LoopNotes         int                    `json:"loopNotes,omitzero"`
 	TranscriptOffsets map[string]int64       `json:"transcriptOffsets,omitempty"` // bytes already counted, per transcript
-	Nudges            int                    `json:"nudges"`                      // no longer incremented; kept for the session file format
-	SearchNudges      int                    `json:"searchNudges,omitzero"`
-	TurnUsedGraft     *bool                  `json:"turnUsedGraft,omitempty"`
-	InputCostMicros   *int                   `json:"inputCostMicros,omitempty"`
-	InputTokensBilled *int                   `json:"inputTokensBilled,omitempty"`
-	LastBillingUUID   *string                `json:"lastBillingUuid,omitempty"`
-	GraftTurns        *int                   `json:"graftTurns,omitempty"`
-	ReportedTurns     *int                   `json:"reportedTurns,omitempty"`
-	LastTallyUUID     *string                `json:"lastTallyUuid,omitempty"`
-	Host              *string                `json:"host,omitempty"`
+	// Micro-skills: Bash calls whose transcript result has not arrived, the
+	// session's shell outcomes, and the facts it received.
+	ShellCalls          []pendingShellCall `json:"shellCalls,omitempty"`
+	ShellObservations   []shellObservation `json:"shellObservations,omitempty"`
+	MicroskillsInjected []string           `json:"microskillsInjected,omitempty"`
+	MicroskillTokens    int                `json:"microskillTokens,omitzero"`
+	Nudges              int                `json:"nudges"` // no longer incremented; kept for the session file format
+	SearchNudges        int                `json:"searchNudges,omitzero"`
+	TurnUsedGraft       *bool              `json:"turnUsedGraft,omitempty"`
+	InputCostMicros     *int               `json:"inputCostMicros,omitempty"`
+	InputTokensBilled   *int               `json:"inputTokensBilled,omitempty"`
+	LastBillingUUID     *string            `json:"lastBillingUuid,omitempty"`
+	GraftTurns          *int               `json:"graftTurns,omitempty"`
+	ReportedTurns       *int               `json:"reportedTurns,omitempty"`
+	LastTallyUUID       *string            `json:"lastTallyUuid,omitempty"`
+	Host                *string            `json:"host,omitempty"`
 }
 
 // netSavedTokens is what the session saved less what the hooks injected; a

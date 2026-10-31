@@ -74,6 +74,17 @@ func runStats(opts callersOptions, stdout, stderr io.Writer) int {
 			push.Set(channel, entry)
 		}
 		merged.Set("push", push)
+		hidden, untilReaudit := statsToolCatalog(ledger)
+		tools := jsonjs.NewObject()
+		tools.Set("hidden", hidden)
+		tools.Set("untilReaudit", float64(untilReaudit))
+		merged.Set("tools", tools)
+		validated, injectable, candidates := statsMicroskills(root)
+		facts := jsonjs.NewObject()
+		facts.Set("validated", float64(validated))
+		facts.Set("injectable", float64(injectable))
+		facts.Set("candidates", float64(candidates))
+		merged.Set("microskills", facts)
 		if _, err := fmt.Fprintln(stdout, jsonjs.Stringify(merged, 2)); err != nil {
 			return 1
 		}
@@ -104,7 +115,7 @@ func runStats(opts callersOptions, stdout, stderr io.Writer) int {
 	ledger := readPushLedger(root, statsSessionHost(values))
 	labels := map[string]string{
 		pushRetrieval: "retrieval", pushOrientation: "orientation", pushSubagentOrientation: "subagents",
-		pushNudge: "nudge", pushBlast: "blast",
+		pushNudge: "nudge", pushBlast: "blast", pushLoop: "loop", pushMicroskills: "microskills",
 	}
 	for _, channel := range pushChannels {
 		state, support, untilReaudit := statsPushState(ledger, channel, id)
@@ -114,6 +125,13 @@ func runStats(opts callersOptions, stdout, stderr io.Writer) int {
 		}
 		lines = append(lines, fmt.Sprintf("  %-18s%s", "push "+labels[channel]+":", value))
 	}
+	tools := "all listed"
+	if hidden, untilReaudit := statsToolCatalog(ledger); len(hidden) > 0 {
+		tools = fmt.Sprintf("hidden %s (re-audit in %d starts)", strings.Join(hidden, ", "), untilReaudit)
+	}
+	lines = append(lines, fmt.Sprintf("  %-18s%s", "tools:", tools))
+	validated, injectable, candidates := statsMicroskills(root)
+	lines = append(lines, fmt.Sprintf("  %-18s%d validated (%d injectable), %d candidates", "microskills:", validated, injectable, candidates))
 	var lastQuery string
 	if json.Unmarshal(values["lastQuery"], &lastQuery) == nil && lastQuery != "" {
 		lines = append(lines, "  last query:    "+lastQuery)
@@ -151,6 +169,17 @@ func statsPushState(ledger pushLedger, channel, id string) (state string, suppor
 	}
 }
 
+// statsToolCatalog reports the graft tools the ledger's tool record hides
+// from tools/list and, when it hides any, the MCP server starts left until
+// the next re-audit start, counting that one.
+func statsToolCatalog(ledger pushLedger) (hidden []string, untilReaudit int) {
+	hidden = ledger.hidden(mcpToolNames())
+	if len(hidden) == 0 {
+		return []string{}, 0
+	}
+	return hidden, pushReauditEvery - ledger.Tools.Starts%pushReauditEvery
+}
+
 // emptySessionJSON is the state of a session nothing has been recorded for.
 const emptySessionJSON = `{"lastQuery":null,"perAgentQuery":{},"graftReads":0,"sourceReads":0,"savedTokens":0,"injectedPointers":[],"nudges":0}`
 
@@ -163,4 +192,21 @@ func groupedNumber(value float64) string {
 		return "-" + plain
 	}
 	return plain
+}
+
+// statsMicroskills counts the repository's validated facts, those of them
+// that may be injected, and the candidates.
+func statsMicroskills(root string) (validated, injectable, candidates int) {
+	for _, fact := range readMicroskills(root) {
+		switch fact.Status {
+		case microskillValidated:
+			validated++
+			if fact.injectable() {
+				injectable++
+			}
+		case microskillCandidate:
+			candidates++
+		}
+	}
+	return validated, injectable, candidates
 }

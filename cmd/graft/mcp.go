@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/h0rn3t/Graft/internal/graph"
@@ -206,10 +207,19 @@ func newMCPServerWith(opts callersOptions, root, contextDir, version, instructio
 			},
 		)
 	}
+	// The client's host, from initialize, picks the tool record that decides
+	// which tools the first tools/list hides; later lists repeat that set.
+	var clientHost atomic.Pointer[string]
+	var decideHidden sync.Once
+	var hidden []string
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
 			switch method {
 			case "initialize":
+				if params, ok := request.GetParams().(*mcp.InitializeParams); ok && params.ClientInfo != nil &&
+					strings.Contains(strings.ToLower(params.ClientInfo.Name), "claude") {
+					clientHost.Store(new(hookHostClaude))
+				}
 				result, err := next(ctx, method, request)
 				if err != nil {
 					return result, err
@@ -229,9 +239,16 @@ func newMCPServerWith(opts callersOptions, root, contextDir, version, instructio
 				if opts.contextDir == "" && !mcpGraphAvailable(contextDir) {
 					return &mcp.ListToolsResult{Tools: []*mcp.Tool{}}, nil
 				}
+				decideHidden.Do(func() {
+					if host := clientHost.Load(); host != nil {
+						hidden = mcpHiddenTools(root, *host)
+					}
+				})
 				tools := make([]*mcp.Tool, 0, len(mcpTools))
 				for _, definition := range mcpTools {
-					tools = append(tools, definition.tool())
+					if !slices.Contains(hidden, definition.Name) {
+						tools = append(tools, definition.tool())
+					}
 				}
 				return &mcp.ListToolsResult{Tools: tools}, nil
 			case "tools/call":
@@ -248,6 +265,42 @@ func newMCPServerWith(opts callersOptions, root, contextDir, version, instructio
 		}
 	})
 	return server
+}
+
+// mcpToolNames lists the catalog's tool names in tools/list order.
+func mcpToolNames() []string {
+	names := make([]string, 0, len(mcpTools))
+	for _, definition := range mcpTools {
+		names = append(names, definition.Name)
+	}
+	return names
+}
+
+// mcpHiddenTools decides, for one MCP server start of host, which tools its
+// tools/list omits: those the repository's tool record hides, except at every
+// pushReauditEvery-th start while something is hidden, which lists them all.
+// Any ledger failure lists every tool.
+func mcpHiddenTools(root, host string) []string {
+	var hidden []string
+	err := updatePushLedger(root, host, func(ledger *pushLedger) bool {
+		hidden = ledger.hidden(mcpToolNames())
+		if len(hidden) == 0 {
+			if ledger.Tools == nil || ledger.Tools.Starts == 0 {
+				return false
+			}
+			ledger.Tools.Starts = 0
+			return true
+		}
+		ledger.Tools.Starts++
+		if ledger.Tools.Starts%pushReauditEvery == 0 {
+			hidden = nil
+		}
+		return true
+	})
+	if err != nil {
+		return nil
+	}
+	return hidden
 }
 
 func mcpStartupInstructions(ctx context.Context, root, contextDir, current string) string {

@@ -1,6 +1,8 @@
 package hosts
 
 import (
+	"errors"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
@@ -69,6 +71,10 @@ func (f *files) installCodexHooks(env Env) ([]ConfigWrite, error) {
 		{event: "SessionStart", matcher: "startup|resume|compact", sub: "session-start", timeout: 10},
 		{event: "UserPromptSubmit", sub: "prompt", timeout: 15},
 		{event: "PostToolUse", matcher: "apply_patch|Write|Edit|MultiEdit", sub: "post-edit", timeout: 10},
+		// Codex documents its shell tool as `Bash`, but 0.166 reports it as
+		// `exec`/`shell`, so the matcher covers all three names; it runs
+		// after failing commands too, so micro-skills learn from its results.
+		{event: "PostToolUse", matcher: "Bash|exec|shell", sub: "tool-savings", timeout: 10},
 		{event: "Stop", sub: "stop", timeout: 10},
 	}
 	write, err := f.mergeHookConfig("codex-hooks", configPath, false, entries, func(entry hookEntry) *jsonjs.Object {
@@ -102,6 +108,44 @@ func CursorHookTargets(repo string) []PlannedWrite {
 	return []PlannedWrite{
 		{HostID: "cursor", ID: "cursor-hooks", Path: filepath.Join(repo, ".cursor", "hooks.json"), Scope: ScopeRepo, Kind: WriteHook, What: "postToolUse / afterMCPExecution / sessionEnd"},
 	}
+}
+
+// OpencodePluginTargets is the repository plugin that carries micro-skills to
+// opencode, planned when opencode is installed.
+func OpencodePluginTargets(repo, home string) []PlannedWrite {
+	if !dirExists(filepath.Join(home, ".config", "opencode")) {
+		return nil
+	}
+	return []PlannedWrite{{HostID: "agents", ID: "opencode-plugin", Path: opencodePluginPath(repo), Scope: ScopeRepo, Kind: WriteHook, What: "graft micro-skills plugin"}}
+}
+
+func opencodePluginPath(repo string) string {
+	return filepath.Join(repo, ".opencode", "plugins", "graft.ts")
+}
+
+// installOpencodePlugin writes the opencode plugin when opencode is installed.
+func (f *files) installOpencodePlugin(repo, home string) ([]ConfigWrite, error) {
+	targets := OpencodePluginTargets(repo, home)
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	write, err := f.writeOwnedFile("opencode-plugin", targets[0].Path, OpencodePlugin(), 0)
+	if err != nil {
+		return nil, err
+	}
+	return []ConfigWrite{write}, nil
+}
+
+// retractOpencodePlugin deletes the plugin when graft wrote it.
+func (f *files) retractOpencodePlugin(path string, apply bool) (RetractAction, error) {
+	data, err := f.readFile(path)
+	if errors.Is(err, fs.ErrNotExist) || err == nil && !strings.HasPrefix(string(data), opencodePluginMarker) {
+		return RetractAbsent, nil
+	}
+	if err != nil {
+		return RetractFailed, err
+	}
+	return f.removeFile(path, apply)
 }
 
 // installCursorHooks writes graft's Cursor project hook entries and deletes
@@ -159,6 +203,9 @@ func (f *files) mergeHookConfig(id, path string, withVersion bool, entries []hoo
 	if !ok {
 		return skipped, nil
 	}
+	// Graft's earlier entries of an event are dropped once; every entry of
+	// this write for the event is kept, so one event can hold several.
+	cleared := make(map[string]bool)
 	for _, entry := range entries {
 		current, present := hooks.Get(entry.event)
 		prior, isArray := jsonjs.AsArray(current)
@@ -167,10 +214,11 @@ func (f *files) mergeHookConfig(id, path string, withVersion bool, entries []hoo
 		}
 		next := make([]jsonjs.Value, 0, len(prior)+1)
 		for _, item := range prior {
-			if !isGraftEntry(item) {
+			if cleared[entry.event] || !isGraftEntry(item) {
 				next = append(next, item)
 			}
 		}
+		cleared[entry.event] = true
 		hooks.Set(entry.event, append(next, render(entry)))
 	}
 	if jsonjs.Stringify(root, 0) == before {

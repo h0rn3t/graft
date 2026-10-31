@@ -29,6 +29,13 @@ type hookToolUse struct {
 }
 
 func isGraftMCPTool(name string) bool {
+	_, ok := graftMCPToolName(name)
+	return ok
+}
+
+// graftMCPToolName returns the catalog name of a graft MCP tool call, with an
+// alias mapped to the tool it stands for.
+func graftMCPToolName(name string) (string, bool) {
 	name = strings.ToLower(name)
 	for strings.Contains(name, "__") {
 		name = strings.ReplaceAll(name, "__", ":")
@@ -37,15 +44,19 @@ func isGraftMCPTool(name string) bool {
 		return r == ':' || r == '.' || r == '/'
 	})
 	if len(parts) == 0 {
-		return false
+		return "", false
 	}
 	bare := parts[len(parts)-1]
-	if _, ok := mcpAliases[bare]; ok {
-		return true
+	if tool, ok := mcpAliases[bare]; ok {
+		return tool, true
 	}
-	return slices.ContainsFunc(mcpTools, func(tool mcpToolDefinition) bool {
+	i := slices.IndexFunc(mcpTools, func(tool mcpToolDefinition) bool {
 		return strings.EqualFold(tool.Name, bare)
 	})
+	if i < 0 {
+		return "", false
+	}
+	return mcpTools[i].Name, true
 }
 
 func isMCPToolName(name string) bool {

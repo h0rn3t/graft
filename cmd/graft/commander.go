@@ -135,6 +135,7 @@ func programSpec() *commandSpec {
 	add(program, "graft read [options] <symbol> [dir]", "--also <symbol>", "--budget <tokens>", "--json", "--no-refresh")
 	add(program, "graft check [options] [dir]", "-e, --extensions <exts...>", "--json")
 	add(program, "graft stats [options] [dir]", "--json")
+	add(program, "graft microskills [options] [dir]", "--all", "--json")
 	add(program, "graft mcp [options] [dir]")
 	add(program, "graft callers [options] <symbol> [dir]", "--direction <in|out>", "-d, --depth <n>", "--in <path>", "--json", "--no-refresh")
 	add(program, "graft blast [options] [dir]", "--base <ref>", "-d, --depth <n>", "--format <fmt>",

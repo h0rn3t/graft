@@ -1,0 +1,11 @@
+Usage: graft microskills [options] [dir]
+
+List the repository facts graft learned from agents' failed and repaired shell commands
+
+Arguments:
+  dir         repository root (default: nearest ancestor with a graft/ index)
+
+Options:
+  --all       also list candidate and retired facts
+  --json      output the facts with their evidence and metrics as JSON
+  -h, --help  display help for command

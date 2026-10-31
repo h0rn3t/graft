@@ -6,7 +6,7 @@
   "env": {},
   "inputs": {},
   "status": 0,
-  "stdout": "graft stats — session s1\n  graft reads:   3\n  source reads:  1   (Read / Grep / Glob)\n  mix:           75% graft\n  tokens saved:  ~12,345\n  injected:      ~0   (context graft's hooks added)\n  net saved:     ~12,345\n  value saved:   ~$0.04\n  push retrieval:   on (support 0)\n  push orientation: on (support 0)\n  push subagents:   on (support 0)\n  push nudge:       on (support 0)\n  push blast:       on (support 0)\n  last query:    store get\n",
+  "stdout": "graft stats — session s1\n  graft reads:   3\n  source reads:  1   (Read / Grep / Glob)\n  mix:           75% graft\n  tokens saved:  ~12,345\n  injected:      ~0   (context graft's hooks added)\n  net saved:     ~12,345\n  value saved:   ~$0.04\n  push retrieval:   on (support 0)\n  push orientation: on (support 0)\n  push subagents:   on (support 0)\n  push nudge:       on (support 0)\n  push blast:       on (support 0)\n  push loop:        on (support 0)\n  push microskills: on (support 0)\n  tools:            all listed\n  microskills:      0 validated (0 injectable), 0 candidates\n  last query:    store get\n",
   "stderr": "",
   "files": {},
   "checkFiles": false

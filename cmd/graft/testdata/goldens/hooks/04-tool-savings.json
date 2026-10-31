@@ -25,6 +25,9 @@
   "status": 0,
   "stdout": "",
   "stderr": "",
-  "files": {},
+  "files": {
+    "repo/graft/.cache/session/usage.json": "{\n  \"lastQuery\": null,\n  \"perAgentQuery\": {},\n  \"graftReads\": 0,\n  \"sourceReads\": 0,\n  \"savedTokens\": 0,\n  \"injectedPointers\": [],\n  \"loopSignatures\": [\n    \"\\u0000a59ea657bbe4adec\"\n  ],\n  \"nudges\": 0\n}",
+    "repo/graft/.cache/session/usage.json.lock": ""
+  },
   "checkFiles": true
 }

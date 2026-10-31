@@ -1,0 +1,22 @@
+{
+  "codex_version": "0.166.0",
+  "capture_date": "2026-11-01",
+  "transport": "interactive TUI with normally reviewed and trusted PostToolUse command hook",
+  "cases": [
+    {
+      "fixture": "success.json",
+      "raw_sha256": "95eecfcafc91d54a48e8e1a3310e3f35037897e8f7092df3251133fc82cb89db",
+      "observed_process_exit_code": 0
+    },
+    {
+      "fixture": "failure-error-line.json",
+      "raw_sha256": "24b06ed6646c03b69344f4aa9bc5dae819c8b56f6a86851cd01625e568c5aff6",
+      "observed_process_exit_code": 7
+    },
+    {
+      "fixture": "failure-without-error-line.json",
+      "raw_sha256": "bd165663dc724b1e1fe241d3c75242e67eeafa585f344bfc09346711b9d702e2",
+      "observed_process_exit_code": 7
+    }
+  ]
+}

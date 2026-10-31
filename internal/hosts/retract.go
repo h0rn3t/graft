@@ -460,6 +460,10 @@ func (f *files) retractTargets(repo string, env Env, opts RetractOptions) []retr
 		shim := legacyCursorShim(repo)
 		list.add("cursor", shim, "legacy Node shim", ScopeRepo, func(apply bool) (RetractAction, error) { return f.retractLegacyShim(shim, apply) })
 	}
+	if !exclude("agents") {
+		plugin := opencodePluginPath(repo)
+		list.add("agents", plugin, "graft micro-skills plugin", ScopeRepo, func(apply bool) (RetractAction, error) { return f.retractOpencodePlugin(plugin, apply) })
+	}
 	if !exclude("claude") {
 		f.addClaudeTargets(list, repo)
 	}

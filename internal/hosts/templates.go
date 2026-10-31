@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-//go:embed templates/instructions.md templates/skill.md
+//go:embed templates/instructions.md templates/skill.md templates/opencode-plugin.ts
 var templates embed.FS
 
 func template(name string) string {
@@ -23,6 +23,15 @@ func template(name string) string {
 func InstructionBody() string {
 	return strings.TrimSuffix(template("instructions.md"), "\n")
 }
+
+// OpencodePlugin is the opencode plugin that carries micro-skills.
+func OpencodePlugin() string {
+	return template("opencode-plugin.ts")
+}
+
+// opencodePluginMarker opens the plugin; uninstall deletes only a file that
+// starts with it.
+const opencodePluginMarker = "// graft-owned: written by `graft init`"
 
 // CursorRule wraps the instruction block as an always-applied Cursor rule.
 func CursorRule() string {
