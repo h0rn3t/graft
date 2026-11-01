@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Micro-skills learn repairs that run the same tool another way.** A failed command was paired only with a later one of the same program and subcommand, so the most common repairs were never learned: `pytest` → `python3 -m pytest`, `ruff check` → `uv run ruff check`, `eslint` → `npx eslint`, and `python3 gen.py` → `.venv/bin/python gen.py`. Commands are now compared by the tool they run: past a launcher (`npx`, `bunx`, `pnpx`, `uvx`), an environment manager's `run` or `exec` (`uv`, `poetry`, `pipenv`, `pdm`, `hatch`, `bundle`, `pnpm`, `npm`), an interpreter's `-m`, and with `python3.12` and `pip3` read as `python` and `pip`. A Python script names the intent, so `python a.py` is not paired with `python b.py`. A failure whose only error line is a Python exception (`ModuleNotFoundError: No module named 'yaml'`) is now recorded too. In this machine's Claude Code transcripts, `No module named yaml` recurred in 5 sessions, `pytest` and `ruff` not found in 3 each.
+
 ## 0.7.0-alpha.1 - 2026-11-01
 
 ### Added

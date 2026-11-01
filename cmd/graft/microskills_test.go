@@ -61,6 +61,36 @@ func TestMicroskillCandidates(t *testing.T) {
 	}
 }
 
+// TestMicroskillCandidatesAcrossLaunchers pairs a failed tool with the form
+// that ran it through an interpreter, a launcher or a virtualenv.
+func TestMicroskillCandidatesAcrossLaunchers(t *testing.T) {
+	root := t.TempDir()
+	tests := []struct{ failed, error, worked, want string }{
+		{"pytest -x tests/", "zsh: command not found: pytest", "python3 -m pytest -x tests/",
+			"`pytest -x …` fails here with `zsh: command not found: pytest`; `python3 -m pytest -x …` works."},
+		{"python3 tools/gen.py", "ModuleNotFoundError: No module named 'yaml'", ".venv/bin/python tools/gen.py",
+			"`python3 …` fails here with `ModuleNotFoundError: No module named 'yaml'`; `.venv/bin/python …` works."},
+		{"ruff check .", "zsh: command not found: ruff", "uv run ruff check .",
+			"`ruff check …` fails here with `zsh: command not found: ruff`; `uv run ruff check …` works."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.failed, func(t *testing.T) {
+			failed, ok1 := newShellObservation(root, "", "1", tt.failed, root, tt.error+"\nExit code 1", true)
+			worked, ok2 := newShellObservation(root, "", "2", tt.worked, root, "ok", false)
+			if !ok1 || !ok2 {
+				t.Fatalf("newShellObservation kept %v, %v; want both", ok1, ok2)
+			}
+			var got []string
+			for _, fact := range microskillCandidates([]shellObservation{failed, worked}) {
+				got = append(got, fact.Instruction)
+			}
+			if !slices.Equal(got, []string{tt.want}) {
+				t.Errorf("microskillCandidates(%q then %q) = %q, want %q", tt.failed, tt.worked, got, tt.want)
+			}
+		})
+	}
+}
+
 // ruffFact is the candidate the ruff repair proposes.
 func ruffFact(t *testing.T) microskill {
 	t.Helper()
@@ -617,8 +647,8 @@ func TestHookCodexCapturedPayloads(t *testing.T) {
 			var stdout bytes.Buffer
 			handleHookToolUse(input, root, &stdout)
 			got := readHookSession(root, id).ShellObservations
-			if stdout.Len() != 0 || len(got) != 1 || got[0].Intent != "python3" || got[0].Failed != tt.wantFailed {
-				t.Errorf("codex %s: stdout %q, observations %+v, want one python3 call with failed=%v", tt.fixture, stdout.String(), got, tt.wantFailed)
+			if stdout.Len() != 0 || len(got) != 1 || got[0].Intent != "python" || got[0].Failed != tt.wantFailed {
+				t.Errorf("codex %s: stdout %q, observations %+v, want one python call with failed=%v", tt.fixture, stdout.String(), got, tt.wantFailed)
 			}
 		})
 	}

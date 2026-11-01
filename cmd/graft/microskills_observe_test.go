@@ -24,6 +24,13 @@ func TestParseShellCommand(t *testing.T) {
 		{command: `openspec instructions x --json | python3 -c "import json"`, wantIntent: "openspec instructions", wantForm: "openspec instructions … --json"},
 		{command: "go test -run 'TestX|TestY' ./cmd/graft", wantIntent: "go test", wantForm: "go test -run …"},
 		{command: "golangci-lint run --fix=true ./...", wantIntent: "golangci-lint run", wantForm: "golangci-lint run --fix=… …"},
+		{command: "python3 -m pytest -x tests/", wantIntent: "pytest", wantForm: "python3 -m pytest -x …"},
+		{command: ".venv/bin/python3.12 -m pip install -r req.txt", wantIntent: "pip install", wantForm: ".venv/bin/python3.12 -m pip install -r …"},
+		{command: "uv run ruff check .", wantIntent: "ruff check", wantForm: "uv run ruff check …"},
+		{command: "npx eslint .", wantIntent: "eslint", wantForm: "npx eslint …"},
+		{command: "python3 scripts/gen.py --out x", wantIntent: "python gen.py", wantForm: "python3 … --out …"},
+		{command: "python -m", wantIntent: "python", wantForm: "python -m"},
+		{command: "uv run --with x pytest", wantIntent: "uv run", wantForm: "uv run --with …"},
 		{command: "", wantIntent: ""},
 		{command: "cd sub", wantIntent: ""},
 	}

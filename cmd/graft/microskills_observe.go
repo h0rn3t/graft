@@ -13,6 +13,13 @@ import (
 // shellObservationLimit bounds the observations a session keeps, newest last.
 const shellObservationLimit = 128
 
+// shellLaunchers run the tool their first argument names, and shellRunners
+// the tool after their subcommand.
+var (
+	shellLaunchers = map[string]bool{"npx": true, "bunx": true, "pnpx": true, "uvx": true}
+	shellRunners   = map[string]string{"uv": "run", "poetry": "run", "pipenv": "run", "pdm": "run", "hatch": "run", "bundle": "exec", "pnpm": "exec", "npm": "exec"}
+)
+
 // shellObservation is one shell call reduced to what micro-skills compare. It
 // holds no output beyond one masked error line.
 type shellObservation struct {
@@ -46,9 +53,12 @@ type shellCommand struct {
 var (
 	shellSubcommandPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 	shellAssignmentPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
-	// An error line names what went wrong in words a tool uses for it; a bare
-	// non-zero exit (grep without a match) has none.
-	shellErrorPattern = regexp.MustCompile(`(?i)\b(errors?|fatal|not found|cannot|can't|couldn't|denied|unknown (flag|option|command|subcommand)|no such|missing|failed|not set|undefined|not recognized|invalid)\b`)
+	// python3.12 and pip3 are python and pip.
+	shellVersionedPattern = regexp.MustCompile(`^(python|pip)[0-9.]*$`)
+	// An error line names what went wrong in words a tool uses for it, or is a
+	// Python exception (ModuleNotFoundError: …); a bare non-zero exit (grep
+	// without a match) has none.
+	shellErrorPattern = regexp.MustCompile(`(?i)\b(errors?|fatal|not found|cannot|can't|couldn't|denied|unknown (flag|option|command|subcommand)|no such|missing|failed|not set|undefined|not recognized|invalid|no module named)\b|\w+Error:`)
 	// Claude Code writes "Exit code 1", Codex "Exit code: 1" or "Process
 	// exited with code 1" (the forms TokenEconomizer reads).
 	shellExitLine    = regexp.MustCompile(`(?i)^\s*(?:exit code|process exited with code)[:\s]+-?\d+\s*$`)
@@ -95,9 +105,20 @@ func parseShellCommand(command string) shellCommand {
 		if len(words) == 0 {
 			continue
 		}
-		parsed.intent, parsed.form = path.Base(filepath.ToSlash(words[0])), words[0]
+		lead, words := shellTool(words)
+		parsed.intent = path.Base(filepath.ToSlash(words[0]))
+		if version := shellVersionedPattern.FindStringSubmatch(parsed.intent); version != nil {
+			parsed.intent = version[1]
+		}
+		parsed.form = strings.Join(append(lead, words[0]), " ")
 		rest := words[1:]
-		if len(rest) > 0 && shellSubcommandPattern.MatchString(rest[0]) {
+		switch {
+		case parsed.intent == "python" && len(rest) > 0 && strings.HasSuffix(rest[0], ".py"):
+			// A script names what the interpreter runs.
+			parsed.intent += " " + path.Base(filepath.ToSlash(rest[0]))
+			parsed.form += " …"
+			rest = rest[1:]
+		case len(rest) > 0 && shellSubcommandPattern.MatchString(rest[0]):
 			parsed.intent += " " + rest[0]
 			parsed.form += " " + rest[0]
 			rest = rest[1:]
@@ -116,6 +137,30 @@ func parseShellCommand(command string) shellCommand {
 		return parsed
 	}
 	return shellCommand{}
+}
+
+// shellTool skips the words that only start the tool a command runs — a
+// launcher, an environment manager's run, an interpreter's -m — so that
+// `pytest`, `python3 -m pytest` and `uv run pytest` share an intent and a
+// failed form can be paired with the one that worked.
+func shellTool(words []string) (lead, tool []string) {
+	for len(words) > 1 {
+		program := path.Base(filepath.ToSlash(words[0]))
+		n := 0
+		switch {
+		case shellLaunchers[program]:
+			n = 1
+		case shellRunners[program] != "" && words[1] == shellRunners[program] && len(words) > 2:
+			n = 2
+		case strings.HasPrefix(program, "python") && shellVersionedPattern.MatchString(program) && words[1] == "-m" && len(words) > 2:
+			n = 2
+		}
+		if n == 0 || strings.HasPrefix(words[n], "-") {
+			break
+		}
+		lead, words = append(lead, words[:n]...), words[n:]
+	}
+	return lead, words
 }
 
 // shellSegments splits a command at &&, ||, ;, | and newlines outside quotes.
