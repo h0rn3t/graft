@@ -64,11 +64,13 @@ type bindingWalk struct {
 	lang     language
 	bindings *fileBindings
 	aliases  map[string]string
+	// goPackages maps a Go file's import names to their paths.
+	goPackages map[string]string
 }
 
 // collectBindings is the pre-order pass that records variable→type bindings.
-func collectBindings(root *sitter.Node, lang language, source []byte) *fileBindings {
-	w := bindingWalk{source: source, lang: lang, bindings: &fileBindings{types: make(map[string]string)}, aliases: make(map[string]string)}
+func collectBindings(root *sitter.Node, lang language, source []byte, goPackages map[string]string) *fileBindings {
+	w := bindingWalk{source: source, lang: lang, bindings: &fileBindings{types: make(map[string]string)}, aliases: make(map[string]string), goPackages: goPackages}
 	w.collectAliases(root)
 	w.visit(root, nil, "")
 	return w.bindings

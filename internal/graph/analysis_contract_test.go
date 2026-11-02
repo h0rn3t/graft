@@ -275,7 +275,7 @@ func TestFindDeadCodeRules(t *testing.T) {
 			"type A struct{}\n\nfunc (A) Run() {}\n\n" +
 			"type B struct{}\n\nfunc (B) Run() {}\n\n" +
 			"type C struct{}\n\nfunc (C) Load() {}\n\n" +
-			"func newC() *C { return nil }\n\n" +
+			"var newC = func() *C { return nil }\n\n" +
 			"func init() {\n\tvar a A\n\ta.Run()\n\tc := newC()\n\tc.Load()\n}\n\n" +
 			"func Exported() {}\n\nfunc orphan() {}\n",
 		"internal/svc/svc_test.go": "package svc\n\nfunc helper() {}\n",

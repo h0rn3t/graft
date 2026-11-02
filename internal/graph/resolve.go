@@ -85,8 +85,11 @@ type resolveIndex struct {
 	goModules         []goModule
 	// goEmbeds holds the extends intents of each Go type by the type's ID,
 	// and goFields its field intents by the type's ID and the field's name.
-	goEmbeds map[string][]rawEdge
-	goFields map[string]rawEdge
+	// goResults holds the result intents of each Go function by the
+	// function's ID and the result's index.
+	goEmbeds  map[string][]rawEdge
+	goFields  map[string]rawEdge
+	goResults map[string]rawEdge
 	// sqlTypesBySegment holds the SQL type definitions with a dotted name,
 	// keyed by its last segment: `users` finds `app.users`.
 	sqlTypesBySegment map[string][]NodeV1
@@ -105,7 +108,7 @@ func resolveEdges(nodes []NodeV1, rawEdges []rawEdge, goModules []goModule) ([]E
 		goFilesByDir: make(map[string][]string), javaFilesBySuffix: make(map[string][]string),
 		cFilesBySuffix: make(map[string][]string), classParents: make(map[string][]string),
 		goModules: goModules, sqlTypesBySegment: make(map[string][]NodeV1), family: make(map[string]string),
-		goEmbeds: make(map[string][]rawEdge), goFields: make(map[string]rawEdge),
+		goEmbeds: make(map[string][]rawEdge), goFields: make(map[string]rawEdge), goResults: make(map[string]rawEdge),
 		unresolvedNames: make(map[string]UnresolvedName),
 	}
 	pushSuffixes := func(index map[string][]string, node NodeV1) {
@@ -171,6 +174,8 @@ func resolveEdges(nodes []NodeV1, rawEdges []rawEdge, goModules []goModule) ([]E
 			ix.goEmbeds[edge.source] = append(ix.goEmbeds[edge.source], edge)
 		case strings.HasSuffix(edge.file, ".go") && edge.relation == "field":
 			ix.goFields[edge.source+"\x00"+edge.name] = edge
+		case strings.HasSuffix(edge.file, ".go") && edge.relation == "result":
+			ix.goResults[edge.source+"\x00"+edge.name] = edge
 		case edge.relation == "extends":
 			ix.classParents[source.Name] = append(ix.classParents[source.Name], edge.name)
 		}
@@ -189,6 +194,9 @@ func resolveEdges(nodes []NodeV1, rawEdges []rawEdge, goModules []goModule) ([]E
 		edges = append(edges, EdgeV1{Source: intent.source, Target: target, Relation: relation, Confidence: confidence, Line: intent.line})
 	}
 	for _, edge := range rawEdges {
+		if strings.HasSuffix(edge.file, ".go") {
+			edge = ix.goCallResult(edge)
+		}
 		switch {
 		case edge.relation == "contains" && edge.targetID != "":
 			add(edge, edge.targetID, "contains", "extracted")

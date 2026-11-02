@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Go methods called on a function's result now have their callers.** A variable assigned from a call, `f := openFiles(repo)` or `c, err := kit.Dial()`, had no type, so `f.writeInstruction()` and every other method or field used through it linked to nothing: `files.writeInstruction` had no callers at all. A Go function now records the type of each of its results, the result type qualified through its own file's imports, and a variable assigned the n-th result of a function of the repository, or of an imported package's function, takes that type. Calls of methods, of built-ins such as `new` and `make`, and of a function value still bind nothing, and `diff := diff.Unified()` leaves the function's other `diff.F()` calls to the package. On this repository the graph gains 1,287 edges and loses none (123 calls, 1,095 field reads, 69 writes); on golang.org/x/tools v0.51.0 it gains 845 and loses none, and calls on a receiver of unknown type fall from 8,159 to 7,404. Checked against per-test coverage of this repository's 220 `internal/` tests: the share of test-executed functions that a walk up the call graph connects to no test fell from 14.0% to 2.7%, and the share of (test, function) pairs it finds rose from 0.83 to 0.93. Extractor `go-v19`; the first build re-extracts every file.
+
 ## 0.7.0-alpha.2 - 2026-11-01
 
 ### Fixed

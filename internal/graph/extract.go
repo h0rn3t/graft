@@ -231,10 +231,9 @@ func extractSource(rel, source string) (extractResult, error) {
 
 	chars := savings.Length(source)
 	x := &extractor{
-		source:   sourceBytes,
-		lang:     lang,
-		bindings: collectBindings(root, lang, sourceBytes),
-		minted:   map[string]struct{}{rel: {}},
+		source: sourceBytes,
+		lang:   lang,
+		minted: map[string]struct{}{rel: {}},
 		nodes: []NodeV1{{
 			ID: rel, Name: path.Base(rel), Kind: "file", Path: rel,
 			Span: fmt.Sprintf("L1-L%d", root.EndPosition().Row+1), Exported: true,
@@ -244,6 +243,7 @@ func extractSource(rel, source string) (extractResult, error) {
 	if lang == langGo {
 		x.goPackages = x.collectGoPackages(root)
 	}
+	x.bindings = collectBindings(root, lang, sourceBytes, x.goPackages)
 	ctx := walkCtx{rel: rel, lang: lang, parentID: rel, imported: x.collectImportedSymbols(root)}
 	x.walkNamedChildren(namedChildren(root), ctx)
 	x.nodes[0].BodyText = new(fileResidual(source, slices.DeleteFunc(slices.Clone(x.nodes[1:]), func(node NodeV1) bool { return askValueKind(node.Kind) })))
@@ -433,6 +433,9 @@ func (x *extractor) emitDefinition(node *sitter.Node, desc *defDescriptor, ctx w
 	}
 	if ctx.lang == langGo && (desc.kind == "struct" || desc.kind == "interface") {
 		x.edges = append(x.edges, x.goEmbeds(node, id, ctx)...)
+	}
+	if ctx.lang == langGo && desc.kind == "function" {
+		x.edges = append(x.edges, x.goResults(node, id, ctx)...)
 	}
 	if ctx.lang == langJava {
 		x.edges = append(x.edges, x.javaAnnotationReferences(node, id, ctx)...)

@@ -197,6 +197,63 @@ func TestResolveGoTypeUses(t *testing.T) {
 	}
 }
 
+func TestResolveGoCallResultReceivers(t *testing.T) {
+	files := map[string]string{
+		"kit/kit.go": "package kit\n\ntype Client struct{}\n\nfunc (c *Client) Do() {}\n\nfunc Dial() *Client { return nil }\n",
+		"app/open.go": "package app\n\nimport (\n\t\"database/sql\"\n\n\t\"example.com/m/kit\"\n)\n\n" +
+			"func open() *Client { return nil }\n\n" +
+			"func remote() *kit.Client { return nil }\n\n" +
+			"func load() (*Client, error) { return nil, nil }\n\n" +
+			"func pair() (int, Client) { return 0, Client{} }\n\n" +
+			"func two() (a, b *Client) { return }\n\n" +
+			"func service() *Service { return nil }\n\n" +
+			"func fail() error { return nil }\n\n" +
+			"func db() *sql.DB { return nil }\n",
+		"app/app.go": "package app\n\nimport \"example.com/m/kit\"\n\n" +
+			"type Client struct{}\n\nfunc (c *Client) Do() {}\n\nfunc (c *Client) Error() string { return \"\" }\n\n" +
+			"type DB struct{}\n\nfunc (d *DB) Query() {}\n\n" +
+			"type Service struct{ client *kit.Client }\n\n" +
+			"func local() {\n\tc := open()\n\tc.Do()\n}\n\n" +
+			"func imported() {\n\tc := kit.Dial()\n\tc.Do()\n}\n\n" +
+			"func qualified() {\n\tc := remote()\n\tc.Do()\n}\n\n" +
+			"func first() {\n\tc, err := load()\n\t_ = err\n\tc.Do()\n}\n\n" +
+			"func second() {\n\t_, c := pair()\n\tc.Do()\n}\n\n" +
+			"func shared() {\n\t_, c := two()\n\tc.Do()\n}\n\n" +
+			"func chain() {\n\ts := service()\n\ts.client.Do()\n}\n\n" +
+			"func builtin() {\n\te := fail()\n\te.Error()\n}\n\n" +
+			"func foreign() {\n\td := db()\n\td.Query()\n}\n\n" +
+			"func builtins() {\n\tc := &Client{}\n\tc.Do()\n\tif c != nil {\n\t\tc := new(Client)\n\t\t_ = c\n\t}\n}\n\n" +
+			"func named() {\n\tkit := kit.Dial()\n\t_ = kit\n}\n",
+	}
+	edges, _ := resolveFiles(t, files, []goModule{{module: "example.com/m", dir: "."}})
+
+	for _, want := range []EdgeV1{
+		{Source: "app/app.go#local", Target: "app/app.go#Client.Do", Relation: "calls", Confidence: "extracted"},    // result of a function in another file
+		{Source: "app/app.go#imported", Target: "kit/kit.go#Client.Do", Relation: "calls", Confidence: "inferred"},  // result of an imported function
+		{Source: "app/app.go#qualified", Target: "kit/kit.go#Client.Do", Relation: "calls", Confidence: "inferred"}, // result type qualified in the callee's file
+		{Source: "app/app.go#first", Target: "app/app.go#Client.Do", Relation: "calls", Confidence: "extracted"},    // first of two results
+		{Source: "app/app.go#second", Target: "app/app.go#Client.Do", Relation: "calls", Confidence: "extracted"},   // second of two results
+		{Source: "app/app.go#shared", Target: "app/app.go#Client.Do", Relation: "calls", Confidence: "extracted"},   // named results sharing a type
+		{Source: "app/app.go#chain", Target: "kit/kit.go#Client.Do", Relation: "calls", Confidence: "inferred"},     // field of a result
+		{Source: "app/app.go#builtins", Target: "app/app.go#Client.Do", Relation: "calls", Confidence: "extracted"}, // new(T) binds no call result over &T{}
+		{Source: "app/app.go#named", Target: "kit/kit.go#Dial", Relation: "calls", Confidence: "inferred"},          // a variable named for a package leaves its calls to the package
+	} {
+		if !slices.Contains(edges, want) {
+			t.Errorf("resolveEdges(app, kit) has no %+v", want)
+		}
+	}
+	for _, unwanted := range []struct{ source, target string }{
+		{"app/app.go#builtin", "app/app.go#Client.Error"}, // error is no type of this repository
+		{"app/app.go#foreign", "app/app.go#DB.Query"},     // nor is sql.DB
+		{"app/app.go#imported", "app/app.go#Client.Do"},
+		{"app/app.go#qualified", "app/app.go#Client.Do"},
+	} {
+		if slices.ContainsFunc(edges, func(edge EdgeV1) bool { return edge.Source == unwanted.source && edge.Target == unwanted.target }) {
+			t.Errorf("resolveEdges(app, kit) links %s to %s, want no edge", unwanted.source, unwanted.target)
+		}
+	}
+}
+
 func TestResolveGoReceiverTyping(t *testing.T) {
 	files := map[string]string{
 		"kit/kit.go": "package kit\n\n" +
@@ -342,8 +399,7 @@ func TestResolveGoValueUses(t *testing.T) {
 			"func read(b *Box) int { return b.Inner + kit.Limit + kit.Default + len(b.Name) }\n\n" +
 			"func build() []Box {\n\t_ = map[Kind]int{KindA: 1}\n\t_ = Weights{KindB: 2}\n\treturn []Box{{Name: \"a\"}}\n}\n\n" +
 			"func shadow() int {\n\thits := 1\n\treturn hits\n}\n\n" +
-			"func load() *Box { return nil }\n\n" +
-			"func untyped() string {\n\tb := load()\n\treturn b.Name\n}\n",
+			"func untyped(load func() *Box) string {\n\tb := load()\n\treturn b.Name\n}\n",
 	}
 	edges, _ := resolveFiles(t, files, []goModule{{module: "example.com/m", dir: "."}})
 
@@ -387,8 +443,7 @@ func TestResolveCountsUnresolvedNames(t *testing.T) {
 		"kit/lock_unix.go":    "package kit\n\nfunc Lock() {}\n",
 		"kit/lock_windows.go": "package kit\n\nfunc Lock() {}\n",
 		"app/app.go": "package app\n\nimport \"example.com/m/kit\"\n\ntype Box struct{ Name string }\n\nfunc (Box) Close() {}\n\n" +
-			"func load() *Box { return nil }\n\n" +
-			"func run() string {\n\tb := load()\n\tb.Close()\n\t_ = tryLock()\n\tkit.Lock()\n\treturn b.Name + b.Missing\n}\n",
+			"func run(load func() *Box) string {\n\tb := load()\n\tb.Close()\n\t_ = tryLock()\n\tkit.Lock()\n\treturn b.Name + b.Missing\n}\n",
 	}
 	var nodes []NodeV1
 	var raw []rawEdge

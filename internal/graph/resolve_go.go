@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"cmp"
 	"maps"
 	"path"
 	"slices"
@@ -147,6 +148,26 @@ func (ix *resolveIndex) resolveGoLiteralKey(edge rawEdge) (string, Relation) {
 // typed in its struct's package, the way Go promotes fields and methods of
 // embedded types. A receiver of a type outside the repository is external; a
 // miss or a tie links nothing.
+// goCallResult types a receiver bound to a function's result: recvType
+// `open()0` names the first result of open, declared in recvPackage. That
+// result's type replaces it, in open's package unless the result names
+// another; a function or result of unknown type leaves the receiver untyped.
+func (ix *resolveIndex) goCallResult(edge rawEdge) rawEdge {
+	function, index, ok := strings.Cut(edge.recvType, "()")
+	if !ok {
+		return edge
+	}
+	edge.recvType = ""
+	functions, _ := ix.goPackageDecls(function, edge.recvPackage, edge.file, []Kind{"function"})
+	if len(functions) != 1 {
+		return edge
+	}
+	if result, ok := ix.goResults[functions[0].ID+"\x00"+index]; ok {
+		edge.recvType, edge.recvPackage = result.recvType, cmp.Or(result.recvPackage, edge.recvPackage)
+	}
+	return edge
+}
+
 func (ix *resolveIndex) resolveGoMember(edge rawEdge) (hit resolved, external bool) {
 	types, external := ix.goPackageDecls(edge.recvType, edge.recvPackage, edge.file, goTypeKinds)
 	for _, field := range edge.recvFields {

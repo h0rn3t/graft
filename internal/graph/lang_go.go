@@ -6,6 +6,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -14,6 +15,14 @@ import (
 )
 
 var goConstructorName = regexp.MustCompile(`^New[A-Z]`)
+
+// goBuiltinFunctions are Go's predeclared functions, whose results no
+// declaration in the graph types.
+var goBuiltinFunctions = map[string]bool{
+	"append": true, "cap": true, "clear": true, "close": true, "complex": true, "copy": true, "delete": true,
+	"imag": true, "len": true, "make": true, "max": true, "min": true, "new": true, "panic": true,
+	"print": true, "println": true, "real": true, "recover": true,
+}
 
 func (x *extractor) describeGo(node *sitter.Node) *defDescriptor {
 	name := x.text(node.ChildByFieldName("name"))
@@ -667,17 +676,31 @@ func (w *bindingWalk) handleGo(node *sitter.Node, scope []string) {
 		if left == nil || right == nil {
 			return
 		}
-		expressions := namedChildren(right)
-		for index, name := range namedChildren(left) {
-			if name.Kind() != "identifier" || index >= len(expressions) {
+		names, expressions := namedChildren(left), namedChildren(right)
+		for index, name := range names {
+			// `a, b := f()` binds f's results in order.
+			expression, result := expressions[0], index
+			if len(expressions) > 1 || len(names) == 1 {
+				if index >= len(expressions) {
+					continue
+				}
+				expression, result = expressions[index], 0
+			}
+			if name.Kind() != "identifier" {
 				continue
 			}
 			// `t, ok := t.(T)` retypes t in its block only, and a binding
 			// holds for the whole function.
-			if assertion := expressions[index]; assertion.Kind() == "type_assertion_expression" && w.text(assertion.ChildByFieldName("operand")) == w.text(name) {
+			if expression.Kind() == "type_assertion_expression" && w.text(expression.ChildByFieldName("operand")) == w.text(name) {
 				continue
 			}
-			if typeName := w.goExpressionType(expressions[index]); typeName != "" {
+			typeName := w.goExpressionType(expression, result)
+			switch {
+			case typeName == "":
+			case strings.Contains(typeName, "()") && w.goPackages[w.text(name)] != "":
+				// `diff := diff.Unified()` leaves the function's other
+				// `diff.F()` calls to the package.
+			default:
 				w.bindings.set(scopePath, w.text(name), typeName)
 			}
 		}
@@ -685,8 +708,10 @@ func (w *bindingWalk) handleGo(node *sitter.Node, scope []string) {
 }
 
 // goExpressionType reads the type of a composite literal or a type assertion,
-// X from a NewX(...) call, or pkg.X from a pkg.NewX(...) call.
-func (w *bindingWalk) goExpressionType(expression *sitter.Node) string {
+// X from a NewX(...) call, or pkg.X from a pkg.NewX(...) call of an imported
+// package. Any other call of a function f, or pkg.f, types its result-th
+// result as `f()N`, which the resolver reads from f's result intents.
+func (w *bindingWalk) goExpressionType(expression *sitter.Node, result int) string {
 	if expression.Kind() == "unary_expression" {
 		for _, child := range namedChildren(expression) {
 			if child.Kind() == "composite_literal" {
@@ -697,20 +722,57 @@ func (w *bindingWalk) goExpressionType(expression *sitter.Node) string {
 	}
 	switch expression.Kind() {
 	case "composite_literal", "type_assertion_expression":
+		if result > 0 {
+			return ""
+		}
 		return goTypeName(expression.ChildByFieldName("type"), w.source)
 	case "call_expression":
 		function := expression.ChildByFieldName("function")
 		qualifier := ""
 		if function != nil && function.Kind() == "selector_expression" {
+			// A method call's result is not typed: x.f() binds nothing, so
+			// it never overrides a binding of the variable it assigns.
 			operand := function.ChildByFieldName("operand")
-			if operand == nil || operand.Kind() != "identifier" {
+			if operand == nil || w.goPackages[w.text(operand)] == "" {
 				return ""
 			}
 			qualifier, function = w.text(operand)+".", function.ChildByFieldName("field")
 		}
-		if function != nil && goConstructorName.MatchString(w.text(function)) {
+		switch {
+		case function == nil || (function.Kind() != "identifier" && function.Kind() != "field_identifier"):
+		case qualifier == "" && goBuiltinFunctions[w.text(function)]:
+		case result == 0 && goConstructorName.MatchString(w.text(function)):
 			return qualifier + w.text(function)[len("New"):]
+		default:
+			return qualifier + w.text(function) + "()" + strconv.Itoa(result)
 		}
 	}
 	return ""
+}
+
+// goResults records the type of each result of a Go function as a "result"
+// intent: source is the function, name the result's index, recvType and
+// recvPackage its type. It links nothing.
+func (x *extractor) goResults(node *sitter.Node, id string, ctx walkCtx) []rawEdge {
+	result := node.ChildByFieldName("result")
+	if result == nil {
+		return nil
+	}
+	types := []*sitter.Node{result}
+	if result.Kind() == "parameter_list" {
+		types = nil
+		for _, declaration := range namedChildrenOfKind(result, "parameter_declaration") {
+			// `(a, b *T)` declares two results of one type.
+			for range max(1, len(namedChildrenOfKind(declaration, "identifier"))) {
+				types = append(types, declaration.ChildByFieldName("type"))
+			}
+		}
+	}
+	var intents []rawEdge
+	for index, typeNode := range types {
+		if name, pkg, ok := x.goQualifiedType(goTypeName(typeNode, x.source)); ok {
+			intents = append(intents, rawEdge{source: id, relation: "result", name: strconv.Itoa(index), recvType: name, recvPackage: pkg, file: ctx.rel})
+		}
+	}
+	return intents
 }
