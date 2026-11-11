@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"cmp"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/h0rn3t/Graft/internal/graph"
 	"github.com/h0rn3t/Graft/internal/jsonjs"
+	"github.com/h0rn3t/Graft/internal/parallel"
 	"github.com/h0rn3t/Graft/internal/sourcefiles"
 )
 
@@ -93,6 +93,104 @@ func runAsk(opts callersOptions, stdout, stderr io.Writer) int {
 	return code
 }
 
+// workspaceGroup is the hits one file of a workspace repository contributes.
+type workspaceGroup struct {
+	key          string
+	child        string
+	hits         []graph.AskHit
+	baselineHits []graph.AskHit
+}
+
+// workspaceCandidate is a workspace repository that has hits for the query.
+type workspaceCandidate struct {
+	child                  string
+	result                 graph.AskResult
+	ranking                *graph.AskRankingMetadata
+	coverage               float64
+	coverageStrong         float64
+	baselineCoverage       float64
+	baselineCoverageStrong float64
+	groups                 []workspaceGroup
+}
+
+// workspaceChildAsk is what asking one workspace repository gave.
+type workspaceChildAsk struct {
+	loaded      bool   // its graph was read
+	distinctive string // the query's distinctive term there, when it was searched
+	candidate   *workspaceCandidate
+}
+
+// askWorkspaceChild searches child, a repository of the workspace at root,
+// unless the query is scoped to onlyChild and child is another one. It shares
+// nothing it writes with other calls, so repositories are asked concurrently.
+func askWorkspaceChild(root, child, onlyChild, childIn string, opts callersOptions, limit float64) workspaceChildAsk {
+	loaded, index, err := opts.queryCache.load(filepath.Join(root, child, "graft"))
+	if err != nil {
+		return workspaceChildAsk{}
+	}
+	if onlyChild != "" && child != onlyChild {
+		return workspaceChildAsk{loaded: true}
+	}
+	childResult, err := graph.Ask(*loaded, opts.query, graph.AskOptions{
+		Limit:                  new(max(limit*4, 20)),
+		In:                     childIn,
+		NoGraphRank:            opts.noGraphRank,
+		Index:                  index,
+		FileFirst:              new(false),
+		FileComplement:         true,
+		IncludeRankingMetadata: true,
+	})
+	asked := workspaceChildAsk{loaded: true, distinctive: childResult.Distinctive}
+	if err != nil || len(childResult.Hits) == 0 {
+		return asked
+	}
+	if opts.source {
+		setAskSourceHashes(*loaded, childResult.Hits)
+		// Each child inlines its own spans, crux included, before fusion.
+		childRoot := filepath.Join(root, child)
+		cruxByPointer := askCruxByPointer(*loaded)
+		inlineAskHits(childRoot, cruxByPointer, childResult.Hits, opts.full, opts.query)
+		inlineAskRanking(childRoot, cruxByPointer, childResult.Ranking, opts.full, opts.query)
+	}
+	ranking := childResult.Ranking
+	groups := make([]workspaceGroup, 0)
+	coverage, coverageStrong := askWorkspaceCoverage(childResult, ranking)
+	baselineCoverage, baselineCoverageStrong := askWorkspaceBaselineCoverage(childResult, ranking)
+	if ranking != nil {
+		groups = make([]workspaceGroup, 0, len(ranking.Groups))
+		for _, group := range ranking.Groups {
+			if len(group.Hits) == 0 {
+				continue
+			}
+			groups = append(groups, workspaceGroup{
+				key:          child + "\x00" + group.Key,
+				child:        child,
+				hits:         group.Hits,
+				baselineHits: group.BaselineHits,
+			})
+		}
+	}
+	if len(groups) == 0 {
+		for _, hit := range childResult.Hits {
+			key := child + "\x00" + workspaceHitGroup(hit)
+			if len(groups) == 0 || groups[len(groups)-1].key != key {
+				groups = append(groups, workspaceGroup{key: key, child: child, hits: []graph.AskHit{hit}, baselineHits: []graph.AskHit{hit}})
+			}
+		}
+	}
+	asked.candidate = &workspaceCandidate{
+		child:                  child,
+		result:                 childResult,
+		ranking:                ranking,
+		coverage:               coverage,
+		coverageStrong:         coverageStrong,
+		baselineCoverage:       baselineCoverage,
+		baselineCoverageStrong: baselineCoverageStrong,
+		groups:                 groups,
+	}
+	return asked
+}
+
 func runWorkspaceAsk(root, contextDir string, children []string, opts callersOptions, limit float64, stdout, stderr io.Writer) int {
 	children = slices.Clone(children)
 	onlyChild := ""
@@ -110,95 +208,25 @@ func runWorkspaceAsk(root, contextDir string, children []string, opts callersOpt
 		}
 	}
 
-	type workspaceGroup struct {
-		key          string
-		child        string
-		hits         []graph.AskHit
-		baselineHits []graph.AskHit
-	}
-	type workspaceCandidate struct {
-		child                  string
-		result                 graph.AskResult
-		ranking                *graph.AskRankingMetadata
-		coverage               float64
-		coverageStrong         float64
-		baselineCoverage       float64
-		baselineCoverageStrong float64
-		groups                 []workspaceGroup
-	}
+	// A repository is loaded and searched on its own, so the repositories take
+	// every CPU; what they found merges in the order of children.
+	asked := make([]workspaceChildAsk, len(children))
+	parallel.Do(len(children), func(i int) {
+		asked[i] = askWorkspaceChild(root, children[i], onlyChild, childIn, opts, limit)
+	})
 	candidates := make([]workspaceCandidate, 0, len(children))
 	loadedCount := 0
-	fileFirst := false
 	distinctive := ""
-	for _, child := range children {
-		childContext := filepath.Join(root, child, "graft")
-		loaded, index, err := opts.queryCache.load(childContext)
-		if err != nil {
-			continue
+	for _, child := range asked {
+		if child.loaded {
+			loadedCount++
 		}
-		loadedCount++
-		if onlyChild != "" && child != onlyChild {
-			continue
-		}
-		childResult, err := graph.Ask(*loaded, opts.query, graph.AskOptions{
-			Limit:                  new(max(limit*4, 20)),
-			In:                     childIn,
-			NoGraphRank:            opts.noGraphRank,
-			Index:                  index,
-			FileFirst:              &fileFirst,
-			FileComplement:         true,
-			IncludeRankingMetadata: true,
-		})
 		if distinctive == "" {
-			distinctive = childResult.Distinctive
+			distinctive = child.distinctive
 		}
-		if err != nil || len(childResult.Hits) == 0 {
-			continue
+		if child.candidate != nil {
+			candidates = append(candidates, *child.candidate)
 		}
-		if opts.source {
-			setAskSourceHashes(*loaded, childResult.Hits)
-			// Each child inlines its own spans, crux included, before fusion.
-			childRoot := filepath.Join(root, child)
-			cruxByPointer := askCruxByPointer(*loaded)
-			inlineAskHits(childRoot, cruxByPointer, childResult.Hits, opts.full, opts.query)
-			inlineAskRanking(childRoot, cruxByPointer, childResult.Ranking, opts.full, opts.query)
-		}
-		ranking := childResult.Ranking
-		groups := make([]workspaceGroup, 0)
-		coverage, coverageStrong := askWorkspaceCoverage(childResult, ranking)
-		baselineCoverage, baselineCoverageStrong := askWorkspaceBaselineCoverage(childResult, ranking)
-		if ranking != nil {
-			groups = make([]workspaceGroup, 0, len(ranking.Groups))
-			for _, group := range ranking.Groups {
-				if len(group.Hits) == 0 {
-					continue
-				}
-				groups = append(groups, workspaceGroup{
-					key:          child + "\x00" + group.Key,
-					child:        child,
-					hits:         group.Hits,
-					baselineHits: group.BaselineHits,
-				})
-			}
-		}
-		if len(groups) == 0 {
-			for _, hit := range childResult.Hits {
-				key := child + "\x00" + workspaceHitGroup(hit)
-				if len(groups) == 0 || groups[len(groups)-1].key != key {
-					groups = append(groups, workspaceGroup{key: key, child: child, hits: []graph.AskHit{hit}, baselineHits: []graph.AskHit{hit}})
-				}
-			}
-		}
-		candidates = append(candidates, workspaceCandidate{
-			child:                  child,
-			result:                 childResult,
-			ranking:                ranking,
-			coverage:               coverage,
-			coverageStrong:         coverageStrong,
-			baselineCoverage:       baselineCoverage,
-			baselineCoverageStrong: baselineCoverageStrong,
-			groups:                 groups,
-		})
 	}
 
 	gatedOut := make([]graph.AskScopeMatch, 0)
@@ -489,77 +517,6 @@ func missingAskChildren(root string, children []string) string {
 		}
 	}
 	return strings.Join(missing, ", ")
-}
-
-func readAskIndex(path string) *graph.AskIndex {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var raw struct {
-		Version    int                 `json:"version"`
-		AvgBodyLen *float64            `json:"avgBodyLen"`
-		DF         [][]json.RawMessage `json:"df"`
-		DocCount   int                 `json:"docCount"`
-		Docs       []struct {
-			ID   string              `json:"id"`
-			Name [][]json.RawMessage `json:"name"`
-			Path [][]json.RawMessage `json:"path"`
-			Body [][]json.RawMessage `json:"body"`
-		} `json:"docs"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil || raw.Version != graph.AskIndexVersion || raw.AvgBodyLen == nil || raw.DF == nil || raw.Docs == nil || raw.DocCount != len(raw.Docs) {
-		return nil
-	}
-	df, ok := askIndexPairs(raw.DF)
-	if !ok {
-		return nil
-	}
-	docs := make(map[string]graph.AskIndexDoc, len(raw.Docs))
-	for _, rawDoc := range raw.Docs {
-		if rawDoc.ID == "" {
-			return nil
-		}
-		name, nameOK := askIndexPairs(rawDoc.Name)
-		pathCounts, pathOK := askIndexPairs(rawDoc.Path)
-		body, bodyOK := askIndexPairs(rawDoc.Body)
-		if !nameOK || !pathOK || !bodyOK {
-			return nil
-		}
-		docs[rawDoc.ID] = graph.AskIndexDoc{Name: name, Path: pathCounts, Body: body}
-	}
-	if len(docs) != raw.DocCount {
-		return nil
-	}
-	return &graph.AskIndex{
-		Version:    raw.Version,
-		AvgBodyLen: *raw.AvgBodyLen,
-		DF:         df,
-		DocCount:   raw.DocCount,
-		Docs:       docs,
-	}
-}
-
-func askIndexPairs(pairs [][]json.RawMessage) (map[string]int, bool) {
-	counts := make(map[string]int, len(pairs))
-	if pairs == nil {
-		return nil, false
-	}
-	for _, pair := range pairs {
-		if len(pair) != 2 {
-			return nil, false
-		}
-		var term string
-		var count int
-		if err := json.Unmarshal(pair[0], &term); err != nil {
-			return nil, false
-		}
-		if err := json.Unmarshal(pair[1], &count); err != nil || term == "" || count < 0 {
-			return nil, false
-		}
-		counts[term] = count
-	}
-	return counts, true
 }
 
 // askLimit reads --limit as the TypeScript CLI does, with Number(): garbage is

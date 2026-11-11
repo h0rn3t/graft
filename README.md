@@ -436,6 +436,7 @@ Codex отримує чотири хуки в `~/.codex/hooks.json`: орієн�
 graft build [dir]                    # побудувати граф і картки для кожного файлу
 graft build --extensions .ts .py     # обмежити розширення лише для цієї збірки
 graft build --include-dir <name>     # індексувати каталог, який зазвичай пропускається (vendor, build, …); можна повторювати, зберігається
+graft build --exclude-dir <path>     # не індексувати це піддерево репозиторію (фікстури, копії, …); можна повторювати, зберігається
 graft build --only-dir <path>        # індексувати лише це піддерево репозиторію; можна повторювати, наступні збірки його зберігають
 graft build --no-lsp                 # не запускати мовний сервер (за замовчуванням він використовується, якщо є в PATH)
 graft build --no-reuse               # перерозібрати всі файли й знову спитати мовний сервер замість повторного використання кешів
@@ -520,7 +521,7 @@ graft --dir <path> <command>         # використати каталог к�
 graft --version, -v                  # надрукувати встановлену версію
 ```
 
-`--include-dir` і обидва вибори `follow` зберігаються в `.graft/config.json`;
+`--include-dir`, `--exclude-dir` і обидва вибори `follow` зберігаються в `.graft/config.json`;
 `--only-dir` записується у відбиток графа, тож наступні збірки й оновлення
 лишаються в цьому піддереві, доки не видалити `graft/`. `--extensions` діє одну
 збірку: наступне оновлення знову індексує всі підтримувані мови.
@@ -914,13 +915,16 @@ Graft не потребує налаштувань. Ці змінні серед
 | `GRAFT_NO_IGNORE=1` | не додавати блок graft у `.ignore` |
 | `GRAFT_MCP_COMMAND` | команда, яку `init` записує в конфігурації MCP замість `graft` чи абсолютного шляху до бінарника |
 | `GRAFT_NO_STATUSLINE=1` | не записувати `statusLine` і `subagentStatusLine` під час `init` чи оновлення підключення |
+| `GOMEMLIMIT` | власна м'яка межа пам'яті Go, наприклад `GOMEMLIMIT=1GiB`. Без неї `graft mcp` тримає себе в межах 640 МіБ або півтора обсягу своїх графів, якщо це більше |
 
 Від Claude Code graft читає `CLAUDE_PROJECT_DIR` (репозиторій, який описують
 хуки й statusline) і `CLAUDE_CONFIG_DIR` (де лежать користувацькі налаштування
 Claude, за замовчуванням `~/.claude`).
 
 `graft build` зберігає вибір для репозиторію в `<repo>/.graft/config.json`:
-`includeDirs` (з `--include-dir`), `followSubmodules` і `followNestedRepos`. Файл
+`includeDirs` (з `--include-dir`), `excludeDirs` (з `--exclude-dir`), `followSubmodules`
+і `followNestedRepos`. Кожна наступна збірка, оновлення й `graft check` обходять
+ті самі файли; щоб прибрати каталог з будь-якого списку, відредагуйте файл. Файл
 додається в `.gitignore`, а `graft uninstall` його не видаляє.
 
 ---

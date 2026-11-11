@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -63,9 +64,13 @@ func TestLoadWorkspaceGraphsReadContract(t *testing.T) {
 		t.Fatalf("WriteFile(%q) error = %v, want nil", filepath.Join(contextDir, "workspace.json"), err)
 	}
 	shared := &GraphV1{Nodes: []NodeV1{{ID: "shared"}}}
+	// Children load concurrently, so read is called from several goroutines.
+	var mu sync.Mutex
 	var reads []string
 	read := func(dir string) (*GraphV1, error) {
+		mu.Lock()
 		reads = append(reads, dir)
+		mu.Unlock()
 		if filepath.Base(filepath.Dir(dir)) == "corrupt" {
 			return nil, os.ErrInvalid
 		}
@@ -80,6 +85,7 @@ func TestLoadWorkspaceGraphsReadContract(t *testing.T) {
 		t.Errorf("LoadWorkspaceGraphs(%q, %q, read).Missing = %v, want [corrupt linked missing]", root, contextDir, got.Missing)
 	}
 	wantReads := []string{filepath.Join(root, "alpha", "graft"), filepath.Join(root, "corrupt", "graft")}
+	slices.Sort(reads)
 	if !slices.Equal(reads, wantReads) {
 		t.Errorf("LoadWorkspaceGraphs(%q, %q, read) read %v, want %v: never a link out of root or an absent graph", root, contextDir, reads, wantReads)
 	}

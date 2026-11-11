@@ -148,6 +148,7 @@ func WriteFingerprint(outDir, extractor string, files map[string]FingerprintFile
 	if err := fsutil.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("write graph fingerprint: %w", err)
 	}
+	pruneSidecars(filepath.Dir(path), "fingerprint")
 	return nil
 }
 

@@ -1,0 +1,22 @@
+# golangci-lint v2: the default linters, and a ceiling on cognitive complexity
+# so that no function grows past what the largest ones already are.
+version: "2"
+
+linters:
+  enable:
+    - gocognit
+  settings:
+    gocognit:
+      min-complexity: 60
+  exclusions:
+    rules:
+      # The functions above the ceiling when it was set (2026-11-11), from
+      # askLexical at 363 down to resolveEdges at 64. Take a name off the list
+      # when its function is split; never add one.
+      - linters:
+          - gocognit
+        text: 'of func `(askLexical|parseSQL|lexSQLMode|extractGenericTags|EnsureFreshGraph|runWorkspaceAsk|mcpCallWithCache|enrichWithLSP|buildGraph|\(\*commandSpec\)\.parseOptions|askRankFilesBounded|runBuild|inlineGrepSource|resolveEdges)`'
+      # A table of cases is long, not hard to follow.
+      - linters:
+          - gocognit
+        path: _test\.go

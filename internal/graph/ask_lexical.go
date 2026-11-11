@@ -93,9 +93,9 @@ func (set *askTermSet) add(term string) {
 
 type askLexDoc struct {
 	node NodeV1
-	name map[string]int
-	path map[string]int
-	body map[string]int
+	name AskCounts
+	path AskCounts
+	body AskCounts
 }
 
 // askFileCandidate is file-rank.ts's FileRankCandidate.
@@ -236,15 +236,15 @@ func askUniqueTerms(text string) []string {
 	return set.terms
 }
 
-func askHasTermTS(field map[string]int, term string) bool {
-	if _, ok := field[term]; ok {
+func askHasTermTS(field AskCounts, term string) bool {
+	if _, ok := field.count(term); ok {
 		return true
 	}
-	if _, ok := field[term+"s"]; ok {
+	if _, ok := field.count(term + "s"); ok {
 		return true
 	}
 	if before, ok := strings.CutSuffix(term, "s"); ok {
-		_, ok := field[before]
+		_, ok := field.count(before)
 		return ok
 	}
 	return false
@@ -257,17 +257,17 @@ func askIDF(idf map[string]float64, term string, fallback float64) float64 {
 	return fallback
 }
 
-func askScoreTS(query []string, doc map[string]int, idf map[string]float64) float64 {
+func askScoreTS(query []string, doc AskCounts, idf map[string]float64) float64 {
 	total := 0.0
 	for _, term := range query {
-		if count := doc[term]; count != 0 {
+		if count, _ := doc.count(term); count != 0 {
 			total += float64(float64(count) * askIDF(idf, term, 1))
 		}
 	}
 	return total
 }
 
-func askBM25TS(query []string, doc map[string]int, idf map[string]float64, length int, average float64) float64 {
+func askBM25TS(query []string, doc AskCounts, idf map[string]float64, length int, average float64) float64 {
 	const (
 		k1 = 1.2
 		b  = 0.75
@@ -278,27 +278,28 @@ func askBM25TS(query []string, doc map[string]int, idf map[string]float64, lengt
 	norm := float64(k1 * (1 - b + float64(b*float64(length))/average))
 	total := 0.0
 	for _, term := range query {
-		if frequency := float64(doc[term]); frequency != 0 {
+		count, _ := doc.count(term)
+		if frequency := float64(count); frequency != 0 {
 			total += float64(askIDF(idf, term, 1) * ((frequency * (k1 + 1)) / (frequency + norm)))
 		}
 	}
 	return total
 }
 
-func askBagLength(bag map[string]int) int {
+func askBagLength(bag AskCounts) int {
 	total := 0
-	for _, count := range bag {
-		total += count
+	for _, count := range bag.counts {
+		total += int(count)
 	}
 	return total
 }
 
-func askMatchedIDFShare(query []string, fields []map[string]int, idf map[string]float64, fallback float64) float64 {
+func askMatchedIDFShare(query []string, fields []AskCounts, idf map[string]float64, fallback float64) float64 {
 	matched, total := 0.0, 0.0
 	for _, term := range query {
 		weight := askIDF(idf, term, fallback)
 		total += weight
-		if slices.ContainsFunc(fields, func(field map[string]int) bool { return askHasTermTS(field, term) }) {
+		if slices.ContainsFunc(fields, func(field AskCounts) bool { return askHasTermTS(field, term) }) {
 			matched += weight
 		}
 	}
@@ -323,12 +324,12 @@ func askNormalizedQueryWeights(query []string, idf map[string]float64, fallback 
 	return weights
 }
 
-func askMatchedLexicalTerms(query []string, name, path, body map[string]int) *askTermSet {
+func askMatchedLexicalTerms(query []string, name, path, body AskCounts) *askTermSet {
 	terms := newAskTermSet()
 	for _, term := range query {
-		_, inName := name[term]
-		_, inPath := path[term]
-		_, inBody := body[term]
+		_, inName := name.count(term)
+		_, inPath := path.count(term)
+		_, inBody := body.count(term)
 		if inName || inPath || inBody {
 			terms.add(term)
 		}
@@ -336,7 +337,7 @@ func askMatchedLexicalTerms(query []string, name, path, body map[string]int) *as
 	return terms
 }
 
-func askMatchedStrongTerms(query []string, name map[string]int) *askTermSet {
+func askMatchedStrongTerms(query []string, name AskCounts) *askTermSet {
 	terms := newAskTermSet()
 	for _, term := range query {
 		if askHasTermTS(name, term) {
@@ -1078,10 +1079,10 @@ func askLexical(wiring GraphV1, query string, limit float64, prefix string, opts
 		maps.Copy(df, index.DF)
 		documentCount = index.DocCount
 	}
-	countBag := func(fields ...map[string]int) {
+	countBag := func(fields ...AskCounts) {
 		seen := make(map[string]struct{})
 		for _, field := range fields {
-			for term := range field {
+			for _, term := range field.terms {
 				if _, dup := seen[term]; !dup {
 					seen[term] = struct{}{}
 					df[term]++
@@ -1140,11 +1141,11 @@ func askLexical(wiring GraphV1, query string, limit float64, prefix string, opts
 			fileNodeHits[hit] = true
 		}
 		if doc, ok := docsByID[id]; ok {
-			matchedOf[hit] = askMatchedIDFShare(q, []map[string]int{doc.name, doc.path, doc.body}, idf, defaultIDF)
+			matchedOf[hit] = askMatchedIDFShare(q, []AskCounts{doc.name, doc.path, doc.body}, idf, defaultIDF)
 			if node.Kind == Kind("file") {
 				matchedStrongOf[hit] = 0
 			} else {
-				matchedStrongOf[hit] = askMatchedIDFShare(q, []map[string]int{doc.name}, idf, defaultIDF)
+				matchedStrongOf[hit] = askMatchedIDFShare(q, []AskCounts{doc.name}, idf, defaultIDF)
 			}
 		} else {
 			matchedOf[hit], matchedStrongOf[hit] = 0, 0

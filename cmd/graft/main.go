@@ -57,6 +57,7 @@ type callersOptions struct {
 	onlyDirs           []string
 	extensions         []string
 	includeDirs        []string
+	excludeDirs        []string
 	followSubmodules   *bool
 	followNestedRepos  *bool
 	workspaceChildName string
@@ -285,6 +286,7 @@ func queryOptions(parsed invocation) callersOptions {
 		onlyDirs:    flags.values["--only-dir"],
 		extensions:  flags.values["--extensions"],
 		includeDirs: flags.values["--include-dir"],
+		excludeDirs: flags.values["--exclude-dir"],
 		format:      value("--format"),
 		noOwners:    flags.bools["--no-owners"],
 		prAuthors:   flags.values["--pr-author"],

@@ -25,6 +25,7 @@
         "--follow-nested-repos",
         "--no-follow-nested-repos",
         "--include-dir <name>",
+        "--exclude-dir <path>",
         "--only-dir <path>",
         "--no-gitignore",
         "--no-ignore"
@@ -34,10 +35,10 @@
       "stderr": "on a terminal, a Bubble Tea spinner and bar with the file being read, left as `✓ read <n> files`; otherwise `\\r`-rewritten parsing progress; a trailing newline, `⚠ -e \"<ext>\": no parser registered…` plus the supported list, per-file `✗ <error>` lines",
       "exit": {
         "0": "built (including per-file extraction errors reported on stderr)",
-        "1": "`✗ --include-dir \"<n>\": dot-directories are never overridable` / `expected a bare directory name, not a path`, `✗ --only-dir: expected a non-empty repo-relative path`, or an uncaught build error"
+        "1": "`✗ --include-dir \"<n>\": dot-directories are never overridable` / `expected a bare directory name, not a path`, `✗ --only-dir: expected a non-empty repo-relative path`, `✗ --exclude-dir: expected a non-empty repo-relative path`, or an uncaught build error"
       },
       "effects": [
-        "repo: <R>/.graft/config.json merge-patched for --include-dir and explicit --[no-]follow-submodules / --[no-]follow-nested-repos, before the walk; also appends the `/.graft/` block to <R>/.gitignore (not suppressed by GRAFT_NO_GITIGNORE)",
+        "repo: <R>/.graft/config.json merge-patched for --include-dir, --exclude-dir and explicit --[no-]follow-submodules / --[no-]follow-nested-repos, before the walk; also appends the `/.graft/` block to <R>/.gitignore (not suppressed by GRAFT_NO_GITIGNORE)",
         "repo: --only-dir is recorded in the fingerprint only, never in .graft/config.json",
         "repo: worktree seed copies wiring.json, .cache/ask-index.json, .cache/extract.*, .cache/fingerprint.* from the main checkout when <R> is a linked worktree without a graph (skipped by GRAFT_NO_SEED, --no-reuse, --dir or GRAFT_DIR)",
         "repo: <C>/.cache/extract.<stamp>.json (newest 2 kept), <C>/.graph/wiring.json (atomic via .tmp), <C>/.cache/ask-index.json, <C>/.cache/fingerprint.<stamp>.json (newest 2 kept)",
@@ -299,6 +300,7 @@
   "environment": {
     "CLAUDE_CONFIG_DIR": { "scope": "hook", "effect": "Claude user config directory" },
     "CLAUDE_PROJECT_DIR": { "scope": "hook", "effect": "repository root seen by native hooks and statusline" },
+    "GOMEMLIMIT": { "scope": "cli", "effect": "Go's soft memory limit; when set, `graft mcp` does not apply its own 640 MiB limit" },
     "GRAFT_DIR": { "scope": "cli", "effect": "context directory override for build, state and hooks" },
     "GRAFT_HOOK_SHIM": { "scope": "hook", "effect": "legacy: path of the Node hook shim that started `_hook`; a user-level Claude shim yields to the project's registration until upkeep migrates it to a direct `_hook <sub> --user` entry" },
     "GRAFT_MCP_COMMAND": { "scope": "cli", "effect": "command written into host MCP configs instead of the probed local graft" },

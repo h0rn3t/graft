@@ -64,11 +64,52 @@ type AskOptions struct {
 	IncludeRankingMetadata bool
 }
 
+// AskCounts is a bag of terms and how often each occurs. Its terms are in
+// ascending order and, within an index, strings shared by all of its bags, so
+// a bag takes about twenty bytes per term where a map takes three times that.
+type AskCounts struct {
+	terms  []string
+	counts []uint32
+}
+
+type askTermCount struct {
+	term  string
+	count uint32
+}
+
+// packAskCounts sorts pairs, in place, into the bag they list. Of a term
+// listed twice the later count stays, as it would in a map.
+func packAskCounts(pairs []askTermCount) AskCounts {
+	if len(pairs) == 0 {
+		return AskCounts{}
+	}
+	slices.SortStableFunc(pairs, func(a, b askTermCount) int { return strings.Compare(a.term, b.term) })
+	bag := AskCounts{terms: make([]string, 0, len(pairs)), counts: make([]uint32, 0, len(pairs))}
+	for i, pair := range pairs {
+		if i+1 < len(pairs) && pairs[i+1].term == pair.term {
+			continue
+		}
+		bag.terms = append(bag.terms, pair.term)
+		bag.counts = append(bag.counts, pair.count)
+	}
+	return bag
+}
+
+// count returns how often term occurs in the bag, and whether the bag lists
+// it at all: a listed term may have a count of zero.
+func (bag AskCounts) count(term string) (int, bool) {
+	i, ok := slices.BinarySearch(bag.terms, term)
+	if !ok {
+		return 0, false
+	}
+	return int(bag.counts[i]), true
+}
+
 // AskIndexDoc contains token-count fields for one graph node.
 type AskIndexDoc struct {
-	Name map[string]int
-	Path map[string]int
-	Body map[string]int
+	Name AskCounts
+	Path AskCounts
+	Body AskCounts
 }
 
 // AskIndex is the validated, in-memory form of the ask token sidecar.
@@ -443,12 +484,23 @@ func askSubjectWords(query string) []string {
 	return words
 }
 
-func askTermCounts(text string) map[string]int {
-	counts := make(map[string]int)
-	for _, term := range askTerms(text) {
-		counts[term]++
+func askTermCounts(text string) AskCounts {
+	terms := askTerms(text)
+	pairs := make([]askTermCount, len(terms))
+	for i, term := range terms {
+		pairs[i] = askTermCount{term: term, count: 1}
 	}
-	return counts
+	slices.SortFunc(pairs, func(a, b askTermCount) int { return strings.Compare(a.term, b.term) })
+	// Equal terms are adjacent now: each run folds into its first pair.
+	folded := pairs[:0]
+	for _, pair := range pairs {
+		if last := len(folded) - 1; last >= 0 && folded[last].term == pair.term {
+			folded[last].count++
+			continue
+		}
+		folded = append(folded, pair)
+	}
+	return packAskCounts(folded)
 }
 
 // askSplitWords puts a space at each word boundary inside an identifier:

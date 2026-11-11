@@ -31,6 +31,7 @@ type Options struct {
 	OutDir            string
 	Extensions        []string
 	IncludeDirs       []string
+	ExcludeDirs       []string // Repository-relative directories whose files are left out.
 	OnlyDirs          []string
 	FollowSubmodules  bool
 	FollowNestedRepos bool
@@ -38,7 +39,9 @@ type Options struct {
 	NoReuse           bool
 	NoSeed            bool
 	NoCacheWrite      bool // Suppress extraction cache writes for read-only graph checks.
-	OnProgress        func(index, total int, file string)
+	// OnProgress hears of each file once, in walk order and one call at a
+	// time, but not always on the goroutine that started the build.
+	OnProgress func(index, total int, file string)
 }
 
 // File carries the stable repository path and stat data used by graph builds
@@ -66,6 +69,7 @@ func Walk(root string, opts Options) ([]File, error) {
 	requested = filepath.Clean(requested)
 	var persisted struct {
 		IncludeDirs       []string `json:"includeDirs"`
+		ExcludeDirs       []string `json:"excludeDirs"`
 		FollowSubmodules  bool     `json:"followSubmodules"`
 		FollowNestedRepos bool     `json:"followNestedRepos"`
 	}
@@ -74,6 +78,9 @@ func Walk(root string, opts Options) ([]File, error) {
 	}
 	if len(opts.IncludeDirs) == 0 {
 		opts.IncludeDirs = persisted.IncludeDirs
+	}
+	if len(opts.ExcludeDirs) == 0 {
+		opts.ExcludeDirs = persisted.ExcludeDirs
 	}
 	opts.FollowSubmodules = opts.FollowSubmodules || persisted.FollowSubmodules
 	opts.FollowNestedRepos = opts.FollowNestedRepos || persisted.FollowNestedRepos
@@ -128,6 +135,14 @@ func Walk(root string, opts Options) ([]File, error) {
 	for index, dir := range opts.OnlyDirs {
 		onlyDirs[index] = strings.ReplaceAll(dir, "\\", "/")
 	}
+	// A hand-edited config may spell a directory with backslashes or a slash at its end.
+	excludeDirs := make([]string, len(opts.ExcludeDirs))
+	for index, dir := range opts.ExcludeDirs {
+		excludeDirs[index] = strings.Trim(strings.ReplaceAll(dir, "\\", "/"), "/")
+	}
+	under := func(rel string) func(dir string) bool {
+		return func(dir string) bool { return rel == dir || strings.HasPrefix(rel, dir+"/") }
+	}
 	files := make([]File, 0, len(found))
 	for _, file := range found {
 		path := file.path
@@ -145,9 +160,10 @@ func Walk(root string, opts Options) ([]File, error) {
 			continue
 		}
 		rel = filepath.ToSlash(rel)
-		if len(onlyDirs) > 0 && !slices.ContainsFunc(onlyDirs, func(dir string) bool {
-			return rel == dir || strings.HasPrefix(rel, dir+"/")
-		}) {
+		if len(onlyDirs) > 0 && !slices.ContainsFunc(onlyDirs, under(rel)) {
+			continue
+		}
+		if slices.ContainsFunc(excludeDirs, under(rel)) {
 			continue
 		}
 		if extensions != nil {

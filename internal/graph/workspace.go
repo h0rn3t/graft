@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/h0rn3t/Graft/internal/fsutil"
+	"github.com/h0rn3t/Graft/internal/parallel"
 )
 
 // WorkspaceChild pairs a workspace repository's directory name with its graph.
@@ -73,7 +74,7 @@ func ReadWorkspaceChildren(contextDir string) ([]string, bool) {
 // are listed in Missing. Child paths stay within root. Workspace indexes and local
 // build settings are limited to 1 MiB before decoding. A non-nil read loads each
 // child's graph from its graft directory, so a caller can share graphs it keeps;
-// nil decodes every graph afresh.
+// nil decodes every graph afresh. Children load concurrently, read included.
 func LoadWorkspaceGraphs(root, contextDir string, read func(contextDir string) (*GraphV1, error)) WorkspaceGraphs {
 	result := WorkspaceGraphs{
 		Loaded:  make([]WorkspaceChild, 0),
@@ -101,35 +102,34 @@ func LoadWorkspaceGraphs(root, contextDir string, read func(contextDir string) (
 		children = discoverWorkspaceChildren(root, rootFS)
 	}
 	slices.Sort(children)
-	for _, child := range children {
-		if !validWorkspaceChild(child) {
+	// Decoding a graph is most of a load, so the children load side by side.
+	graphs := make([]*GraphV1, len(children))
+	parallel.Do(len(children), func(i int) {
+		if !validWorkspaceChild(children[i]) {
+			return
+		}
+		graphPath := filepath.Join(children[i], "graft", GraphDir, GraphFile)
+		if read == nil {
+			var graph *GraphV1
+			if data, err := rootFS.ReadFile(graphPath); err == nil && json.Unmarshal(data, &graph) == nil {
+				graphs[i] = graph
+			}
+			return
+		}
+		// The root resolves the path first, so read never follows a link out of it.
+		if _, err := rootFS.Stat(graphPath); err != nil {
+			return
+		}
+		if graph, err := read(filepath.Join(root, children[i], "graft")); err == nil {
+			graphs[i] = graph
+		}
+	})
+	for i, child := range children {
+		if graphs[i] == nil {
 			result.Missing = append(result.Missing, child)
 			continue
 		}
-		graphPath := filepath.Join(child, "graft", GraphDir, GraphFile)
-		var graph *GraphV1
-		if read == nil {
-			data, err := rootFS.ReadFile(graphPath)
-			if err != nil {
-				result.Missing = append(result.Missing, child)
-				continue
-			}
-			if err := json.Unmarshal(data, &graph); err != nil || graph == nil {
-				result.Missing = append(result.Missing, child)
-				continue
-			}
-		} else {
-			// The root resolves the path first, so read never follows a link out of it.
-			if _, err := rootFS.Stat(graphPath); err != nil {
-				result.Missing = append(result.Missing, child)
-				continue
-			}
-			if graph, err = read(filepath.Join(root, child, "graft")); err != nil {
-				result.Missing = append(result.Missing, child)
-				continue
-			}
-		}
-		result.Loaded = append(result.Loaded, WorkspaceChild{Name: child, Graph: *graph})
+		result.Loaded = append(result.Loaded, WorkspaceChild{Name: child, Graph: *graphs[i]})
 	}
 	return result
 }

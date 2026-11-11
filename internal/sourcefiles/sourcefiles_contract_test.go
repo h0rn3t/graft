@@ -106,6 +106,35 @@ func TestWalkContract(t *testing.T) {
 			want:    []string{"vendor/lib/c.ts"},
 		},
 		{
+			name:  "excluded directory prefix is segment-aware",
+			setup: setupTree,
+			options: Options{
+				OutDir:      "graft",
+				Extensions:  []string{".ts"},
+				ExcludeDirs: []string{"src/a"},
+			},
+			want: []string{"src/a.ts", "src/ab/b.ts"},
+		},
+		{
+			name:  "excluded directory wins inside an only-dir",
+			setup: setupTree,
+			options: Options{
+				Extensions:  []string{".ts"},
+				OnlyDirs:    []string{"src"},
+				ExcludeDirs: []string{`src\ab\`},
+			},
+			want: []string{"src/a/c.ts", "src/a.ts"},
+		},
+		{
+			name: "persisted exclude directory applies without an option",
+			setup: func(t *testing.T, root string) {
+				setupTree(t, root)
+				writeSourcefilesTestFile(t, root, ".graft/config.json", `{"excludeDirs":["src/a","src/ab"]}`)
+			},
+			options: Options{OutDir: "graft", Extensions: []string{".ts"}},
+			want:    []string{"src/a.ts"},
+		},
+		{
 			name:  "file size limit",
 			setup: setupTree,
 			options: Options{

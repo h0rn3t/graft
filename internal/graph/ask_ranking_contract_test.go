@@ -234,7 +234,7 @@ func TestAskRankingContract(t *testing.T) {
 func TestAskIgnoresIndexOfAnotherVersion(t *testing.T) {
 	wiring := traversalGraph([]NodeV1{traversalNode("src/a.go#readTimeout", "readTimeout", "function", "src/a.go")}, nil)
 	stale := &AskIndex{Version: 1, DocCount: 1, Docs: map[string]AskIndexDoc{
-		"src/a.go#readTimeout": {Name: map[string]int{"unrelated": 1}, Path: map[string]int{}, Body: map[string]int{}},
+		"src/a.go#readTimeout": {Name: packAskCounts([]askTermCount{{term: "unrelated", count: 1}})},
 	}, DF: map[string]int{"unrelated": 1}}
 	result, err := Ask(wiring, "timeouts", AskOptions{Index: stale})
 	if err != nil {

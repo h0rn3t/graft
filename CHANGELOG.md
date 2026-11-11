@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`graft build --exclude-dir <path>` leaves a directory out of the graph.** Fixtures, vendored snapshots and copies of real code are indexed like any other source, so they answer queries beside the code they copy: in this repository 30% of the nodes and 25% of the edges came from `cmd/graft/testdata`. The flag takes a repo-relative path, can be repeated and is saved as `excludeDirs` in `.graft/config.json`, so later builds, refreshes, hook syncs and `graft check` walk the same files. A path that is empty, absolute or leaves the repository is refused before anything is written.
+
+### Changed
+
+- **A workspace query asks its repositories at once.** `graft_find_code` at a workspace root loaded and searched one repository after another, and the query cache decoded files under one lock. Repositories are now loaded and searched on every CPU, and so are the graphs `graft_find_all`, `graft_trace_calls` and `graft_repo_map` read; the cache locks one directory at a time. On a workspace of 40 repositories of about 6,300 symbols each (8 cores) `graft_find_code` went from 11 s to 1.4–1.6 s, scoped to one repository with `in` from 8.1 s to 0.7 s, `graft_find_all` from 2.7 s to 1.3 s and `graft_trace_calls` from 1.9 s to 0.5 s. Every answer is byte-identical to the one before.
+- **The ask index takes half the memory and loads three times as fast.** A query read `ask-index.json` into three maps per symbol through generic JSON values. It is now decoded token by token into sorted term lists whose strings every symbol shares: for this repository's index (3,910 symbols, 195,000 term counts) 5.2 MB instead of 11.3 MB in memory and 85 ms instead of 289 ms to load. The file itself is unchanged, and 240 `graft ask` answers over this repository and golang.org/x/tools came out byte-identical.
+- **The MCP server keeps itself under a soft memory limit.** Go lets the heap double before it collects, and a workspace query leaves the graphs it decoded as garbage, so a server of 40 repositories peaked at 907 MB while keeping under 400 MB. `graft mcp` now runs under a limit of 640 MiB, raised to one and a half times the memory its graphs take when that is more, so a large repository is never held below what it needs. With the changes above the same server peaks at 654 MB. `GOMEMLIMIT` sets your own limit.
+- **`graft build` reads and parses files on every CPU.** Files were parsed one at a time. A cold build of this repository went from 7.6 s to 2.2 s and of golang.org/x/tools from 15.3 s to 5.6 s on 8 cores; the graph, the ask index and the cards are byte-identical. Progress is still reported once per file, in the order of the walk.
+
+### Fixed
+
+- **A bug inside one tool call no longer ends the MCP server.** A panic under a call took the whole server down, and with it every graft tool until the session restarted. The call now answers with an error that names the tool and carries the first 3,000 bytes of the stack, and the server keeps running. A panic on one of the build's or the workspace query's worker goroutines is raised on the calling goroutine, so it is contained the same way.
+- **Extraction caches and fingerprints of old versions are removed again.** Every extractor version left `extract.<version>.json` and `fingerprint.<version>.json` in `graft/.cache` for good: this repository had five generations, 68 MB. Writing either file now keeps the two newest of its kind, as the CLI contract has always said, so two graft versions sharing a checkout still each find theirs.
+
 ## 0.7.0-alpha.3 - 2026-11-02
 
 ### Fixed

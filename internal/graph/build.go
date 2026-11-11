@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -10,8 +11,11 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/h0rn3t/Graft/internal/fsutil"
+	"github.com/h0rn3t/Graft/internal/parallel"
 	"github.com/h0rn3t/Graft/internal/sourcefiles"
 )
 
@@ -92,6 +96,41 @@ type extractCache struct {
 // extractCacheVersion changes with the on-disk shape of extractCache.
 const extractCacheVersion = 2
 
+// sidecarsKept is how many extraction caches, and how many fingerprints, a
+// context directory keeps: the one just written and the newest other, so two
+// graft versions sharing a checkout do not parse it cold in turn.
+const sidecarsKept = 2
+
+// pruneSidecars removes all but the sidecarsKept newest "<prefix>.*.json"
+// files of cacheDir (extract-cache.ts pruneSidecars), so an upgrade does not
+// leave a file per extractor version behind.
+func pruneSidecars(cacheDir, prefix string) {
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		return
+	}
+	type sidecar struct {
+		name     string
+		modified time.Time
+	}
+	var sidecars []sidecar
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix+".") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if info, err := entry.Info(); err == nil && info.Mode().IsRegular() {
+			sidecars = append(sidecars, sidecar{name: name, modified: info.ModTime()})
+		}
+	}
+	slices.SortFunc(sidecars, func(a, b sidecar) int {
+		return cmp.Or(b.modified.Compare(a.modified), strings.Compare(a.name, b.name))
+	})
+	for _, stale := range sidecars[min(len(sidecars), sidecarsKept):] {
+		_ = os.Remove(filepath.Join(cacheDir, stale.name)) // A file left behind only costs disk.
+	}
+}
+
 // BuildGraph walks root and builds a GraphV1 (graph/build.ts buildGraph).
 // opts controls source visibility; an empty Extensions slice uses
 // SourceExtensions, so files without a native adapter are reported in
@@ -104,6 +143,49 @@ const extractCacheVersion = 2
 func BuildGraph(root string, opts sourcefiles.Options) (BuildResult, error) {
 	result, _, err := buildGraph(root, opts, nil)
 	return result, err
+}
+
+// builtFile is what reading one source file gives a build.
+type builtFile struct {
+	fingerprint FingerprintFile
+	unsupported bool  // no native extractor, or an encoding it does not read
+	readErr     error // otherwise, why the file could not be read
+	reused      bool  // otherwise, prior holds its extraction
+	extracted   extractResult
+	extractErr  error
+}
+
+// buildFile reads file and, unless prior holds the extraction of the same
+// content, extracts it. It only reads prior, so files build concurrently.
+func buildFile(file sourcefiles.File, prior map[string]cachedFile) builtFile {
+	source, readable, readErr := sourcefiles.Read(file.Abs)
+	built := builtFile{fingerprint: FingerprintFile{Size: file.Size, MTimeMS: file.MTimeMS}}
+	if readErr == nil && readable {
+		built.fingerprint.Hash = sourcefiles.Hash(source)
+	}
+	if !nativeSupported(file.Rel) {
+		built.unsupported = true
+		return built
+	}
+	if readErr != nil {
+		built.readErr = readErr
+		return built
+	}
+	if !readable {
+		built.unsupported = true
+		return built
+	}
+	hash := built.fingerprint.Hash
+	cached, ok := prior[file.Rel]
+	built.reused = ok && cached.Hash == hash &&
+		((cached.Error != "" && len(cached.Nodes) == 0) ||
+			(cached.Error == "" && len(cached.Nodes) > 0 &&
+				cached.Nodes[0].ID == file.Rel && cached.Nodes[0].Path == file.Rel &&
+				cached.Nodes[0].BodyHash == hash && cached.Nodes[0].Kind == Kind("file")))
+	if !built.reused {
+		built.extracted, built.extractErr = extractFile(file.Rel, source)
+	}
+	return built
 }
 
 // buildGraph is BuildGraph with the parse cache in memory: a nil prior is
@@ -205,10 +287,27 @@ func buildGraph(root string, opts sourcefiles.Options, prior map[string]cachedFi
 	nodes := make([]NodeV1, 0, nodeCount)
 	rawEdges := make([]rawEdge, 0, edgeCount)
 	languageSet := make(map[string]struct{})
-	for index, file := range files {
-		if opts.OnProgress != nil {
-			opts.OnProgress(index, len(files), file.Rel)
+
+	// Files are read and parsed independently, so that takes every CPU; the
+	// merge below, like OnProgress, keeps the order of the walk.
+	builtFiles := make([]builtFile, len(files))
+	var progress sync.Mutex
+	finished := make([]bool, len(files))
+	told := 0 // every file before it is finished and told to OnProgress
+	parallel.Do(len(files), func(index int) {
+		builtFiles[index] = buildFile(files[index], prior)
+		if opts.OnProgress == nil {
+			return
 		}
+		progress.Lock()
+		defer progress.Unlock()
+		finished[index] = true
+		for ; told < len(files) && finished[told]; told++ {
+			opts.OnProgress(told, len(files), files[told].Rel)
+		}
+	})
+	for index, file := range files {
+		built := builtFiles[index]
 		_, label, _ := languageOf(file.Rel)
 		if label == "" {
 			label, _ = genericLanguageOf(file.Rel)
@@ -216,32 +315,18 @@ func buildGraph(root string, opts sourcefiles.Options, prior map[string]cachedFi
 		if strings.EqualFold(path.Ext(file.Rel), ".sql") {
 			label = "sql"
 		}
-		source, readable, readErr := sourcefiles.Read(file.Abs)
-		fingerprint := FingerprintFile{Size: file.Size, MTimeMS: file.MTimeMS}
-		if readErr == nil && readable {
-			fingerprint.Hash = sourcefiles.Hash(source)
-		}
-		result.Fingerprints[file.Rel] = fingerprint
-		if !nativeSupported(file.Rel) {
+		result.Fingerprints[file.Rel] = built.fingerprint
+		if built.unsupported {
 			result.Unsupported = append(result.Unsupported, file.Rel)
 			continue
 		}
-		if readErr != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", file.Rel, readErr))
+		if built.readErr != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", file.Rel, built.readErr))
 			continue
 		}
-		if !readable {
-			result.Unsupported = append(result.Unsupported, file.Rel)
-			continue
-		}
-		hash := fingerprint.Hash
-		cached, ok := prior[file.Rel]
-		cacheHit := ok && cached.Hash == hash &&
-			((cached.Error != "" && len(cached.Nodes) == 0) ||
-				(cached.Error == "" && len(cached.Nodes) > 0 &&
-					cached.Nodes[0].ID == file.Rel && cached.Nodes[0].Path == file.Rel &&
-					cached.Nodes[0].BodyHash == hash && cached.Nodes[0].Kind == Kind("file")))
-		if cacheHit {
+		hash := built.fingerprint.Hash
+		if built.reused {
+			cached := prior[file.Rel]
 			cached.Size = file.Size
 			cached.MTimeMS = file.MTimeMS
 			current.Files[file.Rel] = cached
@@ -267,7 +352,7 @@ func buildGraph(root string, opts sourcefiles.Options, prior map[string]cachedFi
 			continue
 		}
 		result.Parsed++
-		extracted, err := extractFile(file.Rel, source)
+		extracted, err := built.extracted, built.extractErr
 		entry := cachedFile{
 			Size: file.Size, MTimeMS: file.MTimeMS, Hash: hash,
 			Nodes: make([]NodeV1, 0), RawEdges: make([]cachedEdge, 0),
@@ -303,6 +388,7 @@ func buildGraph(root string, opts sourcefiles.Options, prior map[string]cachedFi
 			return BuildResult{}, nil, fmt.Errorf("encode graph extraction cache: %w", err)
 		}
 		_ = fsutil.WriteFileAtomic(cachePath, data, 0o644) // A cache write failure only costs reuse on the next build.
+		pruneSidecars(filepath.Dir(cachePath), "extract")
 	}
 
 	edges, unresolved, unresolvedNames := resolveEdges(nodes, rawEdges, modules)

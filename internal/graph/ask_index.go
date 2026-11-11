@@ -1,9 +1,13 @@
 package graph
 
 import (
+	"bytes"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -169,12 +173,17 @@ func (file askIndexFile) encode() ([]byte, error) {
 // index returns the file as a query reads it back: nil when two documents
 // share an id, since such an index is dropped.
 func (file askIndexFile) index() *AskIndex {
-	counts := func(bag askBag) map[string]int {
-		out := make(map[string]int, len(bag.Terms))
+	var pairs []askTermCount
+	counts := func(bag askBag) AskCounts {
+		pairs = pairs[:0]
 		for i, term := range bag.Terms {
-			out[term] = bag.Counts[i]
+			pairs = append(pairs, askTermCount{term: term, count: uint32(bag.Counts[i])}) //nolint:gosec // G115: a term occurs no more often than its text has characters
 		}
-		return out
+		return packAskCounts(pairs)
+	}
+	df := make(map[string]int, len(file.df.Terms))
+	for i, term := range file.df.Terms {
+		df[term] = file.df.Counts[i]
 	}
 	docs := make(map[string]AskIndexDoc, len(file.docs))
 	for _, doc := range file.docs {
@@ -183,7 +192,207 @@ func (file askIndexFile) index() *AskIndex {
 	if len(docs) != len(file.docs) {
 		return nil
 	}
-	return &AskIndex{Version: AskIndexVersion, AvgBodyLen: file.average, DF: counts(file.df), DocCount: len(file.docs), Docs: docs}
+	return &AskIndex{Version: AskIndexVersion, AvgBodyLen: file.average, DF: df, DocCount: len(file.docs), Docs: docs}
+}
+
+// ReadAskIndex reads the ask index at path as a query uses it. It returns nil
+// when there is no file or the file is not an index of AskIndexVersion; a
+// query then counts the terms itself.
+func ReadAskIndex(path string) *AskIndex {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	reader := askIndexReader{
+		dec:   jsontext.NewDecoder(bytes.NewReader(data), jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true)),
+		terms: make(map[string]string),
+	}
+	index, ok := reader.index()
+	if !ok {
+		return nil
+	}
+	return index
+}
+
+// askIndexReader decodes ask-index.json token by token, straight into the
+// bags a query reads. Decoding it into generic values first took four times
+// as long and left several times the garbage.
+type askIndexReader struct {
+	dec *jsontext.Decoder
+	// terms maps a term, as the file quotes it, to the one string shared by
+	// every bag that lists the term.
+	terms map[string]string
+	pairs []askTermCount // the bag read last, in the file's order
+}
+
+// next reads a token and reports whether it is of kind.
+func (r *askIndexReader) next(kind jsontext.Kind) bool {
+	token, err := r.dec.ReadToken()
+	return err == nil && token.Kind() == kind
+}
+
+// number reads a non-negative integer of at most 32 bits.
+func (r *askIndexReader) number() (uint32, bool) {
+	value, err := r.dec.ReadValue()
+	if err != nil || len(value) == 0 || len(value) > 10 {
+		return 0, false
+	}
+	n := uint64(0)
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+		n = n*10 + uint64(digit-'0')
+	}
+	if n > math.MaxUint32 {
+		return 0, false
+	}
+	return uint32(n), true
+}
+
+// bag reads [[term, count], ...] into r.pairs.
+func (r *askIndexReader) bag() bool {
+	r.pairs = r.pairs[:0]
+	if !r.next('[') {
+		return false
+	}
+	for r.dec.PeekKind() == '[' {
+		if !r.next('[') {
+			return false
+		}
+		quoted, err := r.dec.ReadValue()
+		if err != nil || quoted.Kind() != '"' {
+			return false
+		}
+		term, known := r.terms[string(quoted)]
+		if !known {
+			// The decoder vouched for the syntax, so all AppendUnquote can
+			// report is invalid UTF-8, which it has replaced.
+			unquoted, _ := jsontext.AppendUnquote(nil, quoted)
+			term = string(unquoted)
+			r.terms[string(quoted)] = term
+		}
+		count, ok := r.number()
+		if !ok || term == "" || !r.next(']') {
+			return false
+		}
+		r.pairs = append(r.pairs, askTermCount{term: term, count: count})
+	}
+	return r.next(']')
+}
+
+// docs reads [{"id": ..., "name": ..., "path": ..., "body": ...}, ...]. It
+// also returns how many documents the array lists, which is more than the map
+// holds when two of them share an id.
+func (r *askIndexReader) docs() (map[string]AskIndexDoc, int, bool) {
+	if !r.next('[') {
+		return nil, 0, false
+	}
+	docs := make(map[string]AskIndexDoc)
+	listed := 0
+	for r.dec.PeekKind() == '{' {
+		if !r.next('{') {
+			return nil, 0, false
+		}
+		var id string
+		var doc AskIndexDoc
+		var hasName, hasPath, hasBody bool
+		for r.dec.PeekKind() == '"' {
+			name, err := r.dec.ReadToken()
+			if err != nil {
+				return nil, 0, false
+			}
+			ok := true
+			switch name.String() {
+			case "id":
+				var token jsontext.Token
+				if token, err = r.dec.ReadToken(); err != nil || token.Kind() != '"' {
+					return nil, 0, false
+				}
+				id = token.String()
+			case "name":
+				ok, hasName = r.bag(), true
+				doc.Name = packAskCounts(r.pairs)
+			case "path":
+				ok, hasPath = r.bag(), true
+				doc.Path = packAskCounts(r.pairs)
+			case "body":
+				ok, hasBody = r.bag(), true
+				doc.Body = packAskCounts(r.pairs)
+			default:
+				ok = r.dec.SkipValue() == nil
+			}
+			if !ok {
+				return nil, 0, false
+			}
+		}
+		if !r.next('}') || id == "" || !hasName || !hasPath || !hasBody {
+			return nil, 0, false
+		}
+		docs[id] = doc
+		listed++
+	}
+	return docs, listed, r.next(']')
+}
+
+// index reads the file and validates it as a whole.
+func (r *askIndexReader) index() (*AskIndex, bool) {
+	index := new(AskIndex)
+	var hasVersion, hasAverage bool
+	docCount, listed := -1, 0
+	if !r.next('{') {
+		return nil, false
+	}
+	for r.dec.PeekKind() == '"' {
+		name, err := r.dec.ReadToken()
+		if err != nil {
+			return nil, false
+		}
+		var ok bool
+		switch name.String() {
+		case "version":
+			var version uint32
+			version, ok = r.number()
+			index.Version, hasVersion = int(version), true
+		case "avgBodyLen":
+			var average jsontext.Value
+			if average, err = r.dec.ReadValue(); err != nil || average.Kind() != '0' {
+				return nil, false
+			}
+			index.AvgBodyLen, err = strconv.ParseFloat(string(average), 64)
+			ok, hasAverage = err == nil, true
+		case "df":
+			if ok = r.bag(); ok {
+				index.DF = make(map[string]int, len(r.pairs))
+				for _, pair := range r.pairs {
+					index.DF[pair.term] = int(pair.count)
+				}
+			}
+		case "docCount":
+			var count uint32
+			count, ok = r.number()
+			docCount = int(count)
+		case "docs":
+			index.Docs, listed, ok = r.docs()
+		default:
+			ok = r.dec.SkipValue() == nil
+		}
+		if !ok {
+			return nil, false
+		}
+	}
+	if !r.next('}') {
+		return nil, false
+	}
+	if _, err := r.dec.ReadToken(); !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	if !hasVersion || index.Version != AskIndexVersion || !hasAverage || index.DF == nil || index.Docs == nil ||
+		docCount != listed || len(index.Docs) != listed {
+		return nil, false
+	}
+	index.DocCount = docCount
+	return index, true
 }
 
 // readAskTermBags returns the term cache's bags, keyed by the SHA-256 of the

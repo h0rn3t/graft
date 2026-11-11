@@ -6,9 +6,12 @@ import "github.com/h0rn3t/Graft/internal/repoconfig"
 // .graft/config.json, keeping the existing keys in their order, and makes
 // sure .gitignore covers the directory.
 func patchBuildConfig(root string, opts callersOptions) error {
-	fields := make([]repoconfig.Field, 0, 3)
+	fields := make([]repoconfig.Field, 0, 4)
 	if len(opts.includeDirs) > 0 {
 		fields = append(fields, repoconfig.Field{Key: "includeDirs", Value: opts.includeDirs})
+	}
+	if len(opts.excludeDirs) > 0 {
+		fields = append(fields, repoconfig.Field{Key: "excludeDirs", Value: opts.excludeDirs})
 	}
 	if opts.followSubmodules != nil {
 		fields = append(fields, repoconfig.Field{Key: "followSubmodules", Value: *opts.followSubmodules})

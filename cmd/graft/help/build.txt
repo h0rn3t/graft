@@ -33,6 +33,11 @@ Options:
                               tools); persisted, so a later build (and the
                               hooks/refresh path) include it without the flag;
                               dot-dirs are never overridable (default: [])
+  --exclude-dir <path>        leave out the files under this repo-relative
+                              path — repeatable (e.g. --exclude-dir
+                              testdata/fixtures); persisted, so a later build
+                              (and the hooks/refresh path) leaves it out
+                              without the flag (default: [])
   --only-dir <path>           only index files under this repo-relative path —
                               repeatable. Recorded in the graph fingerprint so
                               a later build (and the hooks/refresh path) walks

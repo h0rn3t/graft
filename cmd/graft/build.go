@@ -3,9 +3,11 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,6 +21,36 @@ import (
 // as a query-time refresh or a hook sync, to finish before giving up.
 const buildLockWait = 5 * time.Minute
 
+// buildDirOptions checks the directories --only-dir, --include-dir and
+// --exclude-dir name, and returns the first and the last as slash-separated
+// repo-relative paths.
+func buildDirOptions(opts callersOptions) (onlyDirs, excludeDirs []string, err error) {
+	for _, dir := range opts.onlyDirs {
+		dir = strings.ReplaceAll(dir, "\\", "/")
+		dir = strings.Trim(filepath.ToSlash(filepath.Clean(dir)), "/")
+		if dir == "" || dir == "." || !filepath.IsLocal(filepath.FromSlash(dir)) {
+			return nil, nil, errors.New("--only-dir: expected a non-empty repo-relative path")
+		}
+		onlyDirs = append(onlyDirs, dir)
+	}
+	for _, name := range opts.includeDirs {
+		if strings.HasPrefix(name, ".") {
+			return nil, nil, fmt.Errorf("--include-dir %q: dot-directories are never overridable", name)
+		}
+		if strings.ContainsAny(name, `/\\`) {
+			return nil, nil, fmt.Errorf("--include-dir %q: expected a bare directory name, not a path", name)
+		}
+	}
+	for _, dir := range opts.excludeDirs {
+		dir = path.Clean(strings.ReplaceAll(dir, "\\", "/"))
+		if dir == "." || !filepath.IsLocal(filepath.FromSlash(dir)) {
+			return nil, nil, errors.New("--exclude-dir: expected a non-empty repo-relative path")
+		}
+		excludeDirs = append(excludeDirs, dir)
+	}
+	return onlyDirs, excludeDirs, nil
+}
+
 func runBuild(opts callersOptions, stdout, stderr io.Writer) int {
 	workspacePrefix := workspaceBuildPrefix(opts)
 	root, contextDir, err := resolvePaths(opts, buildPathRules, stderr)
@@ -27,26 +59,12 @@ func runBuild(opts callersOptions, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	var onlyDirs []string
-	for _, dir := range opts.onlyDirs {
-		dir = strings.ReplaceAll(dir, "\\", "/")
-		dir = strings.Trim(filepath.ToSlash(filepath.Clean(dir)), "/")
-		if dir == "" || dir == "." || !filepath.IsLocal(filepath.FromSlash(dir)) {
-			writeDiagnostic(stderr, "✗ --only-dir: expected a non-empty repo-relative path\n")
-			return 1
-		}
-		onlyDirs = append(onlyDirs, dir)
+	onlyDirs, excludeDirs, err := buildDirOptions(opts)
+	if err != nil {
+		writeDiagnostic(stderr, "✗ %v\n", err)
+		return 1
 	}
-	for _, name := range opts.includeDirs {
-		if strings.HasPrefix(name, ".") {
-			writeDiagnostic(stderr, "✗ --include-dir %q: dot-directories are never overridable\n", name)
-			return 1
-		}
-		if strings.ContainsAny(name, `/\\`) {
-			writeDiagnostic(stderr, "✗ --include-dir %q: expected a bare directory name, not a path\n", name)
-			return 1
-		}
-	}
+	opts.excludeDirs = excludeDirs
 	if err := patchBuildConfig(root, opts); err != nil {
 		writeDiagnostic(stderr, "✗ %sbuild configuration write failed: %v\n", workspacePrefix, err)
 		return 1

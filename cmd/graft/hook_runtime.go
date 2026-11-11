@@ -754,7 +754,7 @@ func askHookGraph(ctx context.Context, root, contextDir, prompt, scope string) (
 	}
 	limit := 3.0
 	result, err := graph.Ask(*loaded, prompt, graph.AskOptions{
-		Limit: &limit, In: scope, Index: readAskIndex(filepath.Join(contextDir, ".cache", "ask-index.json")),
+		Limit: &limit, In: scope, Index: graph.ReadAskIndex(filepath.Join(contextDir, ".cache", "ask-index.json")),
 	})
 	if err != nil {
 		return graph.AskResult{}, false

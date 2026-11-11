@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -173,6 +174,10 @@ func runMCP(ctx context.Context, opts callersOptions, stdin io.Reader, stdout, s
 		writeDiagnostic(stderr, "%s\n", line)
 	}
 	cache := new(queryCache)
+	// GOMEMLIMIT is the user's own choice of limit, which the runtime has applied.
+	if os.Getenv("GOMEMLIMIT") == "" {
+		cache.memoryLimit = mcpMemoryLimit
+	}
 	server := newMCPServerWith(opts, root, contextDir, version, mcpInstructionsFrom(lines), cache)
 	err = server.Run(ctx, &mcpTransport{reader: stdin, writer: stdout})
 	// A refresh writes the graph's files after answering; finish them first.
@@ -606,6 +611,10 @@ type mcpResult struct {
 
 // mcpCall answers one tools/call without retaining query snapshots.
 // The server uses mcpCallWithCache with its own synchronized cache.
+// mcpPanicTraceBytes is how much of the stack a contained panic reports: the
+// frames that raised it come first.
+const mcpPanicTraceBytes = 3000
+
 func mcpCall(ctx context.Context, root, contextDir, dirOverride, requestedName string, args map[string]any) mcpResult {
 	return mcpCallWithCache(ctx, root, contextDir, dirOverride, requestedName, args, nil)
 }
@@ -613,6 +622,18 @@ func mcpCall(ctx context.Context, root, contextDir, dirOverride, requestedName s
 func mcpCallWithCache(ctx context.Context, root, contextDir, dirOverride, requestedName string, args map[string]any, cache *queryCache) (result mcpResult) {
 	// Deferred first, so it runs last and also bounds the refresh note.
 	defer func() { result.text = fitMCPText(result.text, mcpResultCeiling) }()
+	// A bug under one call must not end the server, and with it every graft
+	// tool of the session; the trace is what a report of the bug needs.
+	defer func() {
+		if value := recover(); value != nil {
+			trace := debug.Stack()
+			result = mcpResult{
+				text: fmt.Sprintf("%s failed inside graft: %v\nThis is a bug in graft; the server keeps running. Trace:\n%s",
+					requestedName, value, trace[:min(len(trace), mcpPanicTraceBytes)]),
+				isError: true, thrown: true,
+			}
+		}
+	}()
 	name := mcpAliases[requestedName]
 	if name == "" {
 		name = requestedName
@@ -622,6 +643,7 @@ func mcpCallWithCache(ctx context.Context, root, contextDir, dirOverride, reques
 	if !known {
 		return mcpResult{text: "unknown tool: " + requestedName, isError: true}
 	}
+	cache.tuneMemoryLimit()
 	var askOpts callersOptions
 	var readSymbols []string
 	if name == "graft_find_code" || name == "graft_read_symbol" {
@@ -760,87 +782,9 @@ func mcpCallWithCache(ctx context.Context, root, contextDir, dirOverride, reques
 		}
 		return mcpTraceCalls(root, contextDir, symbol, args, cache)
 	case "graft_find_all":
-		pattern := mcpString(args["pattern"])
-		if pattern == "" {
-			return mcpResult{text: "graft_find_all requires a pattern", isError: true}
-		}
-		if _, workspace := graph.ReadWorkspaceChildren(contextDir); workspace {
-			return mcpWorkspaceGrep(root, contextDir, pattern, args, cache)
-		}
-		in, scopeNote := mcpScope(contextDir, mcpString(args["in"]), cache)
-		if scopeNote != "" {
-			scopeNote += "\n"
-		}
-		// Typed options, never argv: a pattern such as "-i" stays a pattern,
-		// and the graph is the one this server was started on.
-		output := mcpRunCommand(runGrep, callersOptions{
-			command: "grep", query: pattern, root: root, rootSet: true, contextDir: dirOverride, jsonOutput: true,
-			ignoreCase: args["ignore_case"] == true, fixed: args["fixed"] == true, in: in, noRefresh: true,
-			queryCache: cache,
-		})
-		if output.isError {
-			return output
-		}
-		var result graph.GrepResult
-		if err := json.Unmarshal([]byte(output.text), &result); err != nil {
-			return mcpResult{text: err.Error(), isError: true, thrown: true}
-		}
-		if result.TotalHits == 0 {
-			var graphs []graph.GraphV1
-			if wiring, err := cache.loadGraph(contextDir); err == nil {
-				graphs = append(graphs, *wiring)
-			}
-			return mcpResult{text: scopeNote + grepZeroHitNote(result, graphs...), isError: false}
-		}
-		fitted := fitGrepResult(result, mcpGrepBudget)
-		text := scopeNote + formatGrepResult(fitted)
-		budget := mcpGrepSourceBudget
-		if fitted.Truncated.Hits > 0 {
-			budget = mcpGrepBudget // hits past the cap make no narrow search
-		}
-		if inlined := inlineGrepSource(root, fitted, budget); inlined != "" {
-			text = scopeNote + inlined
-		}
-		if note := grepRemainderNote(result, fitted); note != "" {
-			text += note + "\n"
-		}
-		if result.Saved != nil {
-			recordQuerySavings(contextDir, len(text), result.Saved.BaselineChars)
-		}
-		return mcpResult{text: text, isError: false}
+		return mcpFindAll(root, contextDir, dirOverride, args, cache)
 	case "graft_repo_map":
-		maxDirs := 0
-		if value, ok := mcpNumber(args["max_dirs"]); ok && value > 0 {
-			maxDirs = int(value)
-		}
-		if _, ok := graph.ReadWorkspaceChildren(contextDir); ok {
-			return mcpResult{text: graph.FederateMap(root, contextDir, graph.RepoMapOptions{MaxDirs: maxDirs}, cache.loadGraph), isError: false}
-		}
-		loaded, err := cache.loadGraph(contextDir)
-		if err != nil {
-			return mcpResult{text: "no graph found — run `graft build` first", isError: true}
-		}
-		repoMap := graph.BuildRepoMap(*loaded, graph.RepoMapOptions{MaxDirs: maxDirs})
-		text := graph.FormatRepoMap(repoMap)
-		// Past the ceiling the map lists fewer directories, keeping its
-		// hotspots; the dropped ones are counted. 64 characters are left for
-		// the line that says so.
-		if limit := mcpResultCeiling - 64; savings.Length(text) > limit {
-			shown := len(repoMap.Dirs)
-			for _, scope := range repoMap.Scopes {
-				shown = max(shown, len(scope.Dirs))
-			}
-			for savings.Length(text) > limit && shown > 1 {
-				shown = max(shown*limit/savings.Length(text), 1)
-				repoMap = graph.BuildRepoMap(*loaded, graph.RepoMapOptions{MaxDirs: shown})
-				text = graph.FormatRepoMap(repoMap)
-			}
-			text += fmt.Sprintf("max_dirs %d is what one answer holds\n", shown)
-		}
-		if repoMap.Saved != nil {
-			recordQuerySavings(contextDir, len(text), repoMap.Saved.BaselineChars)
-		}
-		return mcpResult{text: text, isError: false}
+		return mcpRepoMap(root, contextDir, args, cache)
 	case "graft_check_freshness":
 		// It checks the files on disk, so the last refresh must have written them.
 		if cache != nil {
@@ -853,6 +797,96 @@ func mcpCallWithCache(ctx context.Context, root, contextDir, dirOverride, reques
 	default:
 		return mcpResult{text: "unknown tool: " + requestedName, isError: true}
 	}
+}
+
+// mcpFindAll answers graft_find_all: every hit of a pattern, with the source
+// of the definitions that hold them while the budget lasts.
+func mcpFindAll(root, contextDir, dirOverride string, args map[string]any, cache *queryCache) mcpResult {
+	pattern := mcpString(args["pattern"])
+	if pattern == "" {
+		return mcpResult{text: "graft_find_all requires a pattern", isError: true}
+	}
+	if _, workspace := graph.ReadWorkspaceChildren(contextDir); workspace {
+		return mcpWorkspaceGrep(root, contextDir, pattern, args, cache)
+	}
+	in, scopeNote := mcpScope(contextDir, mcpString(args["in"]), cache)
+	if scopeNote != "" {
+		scopeNote += "\n"
+	}
+	// Typed options, never argv: a pattern such as "-i" stays a pattern,
+	// and the graph is the one this server was started on.
+	output := mcpRunCommand(runGrep, callersOptions{
+		command: "grep", query: pattern, root: root, rootSet: true, contextDir: dirOverride, jsonOutput: true,
+		ignoreCase: args["ignore_case"] == true, fixed: args["fixed"] == true, in: in, noRefresh: true,
+		queryCache: cache,
+	})
+	if output.isError {
+		return output
+	}
+	var result graph.GrepResult
+	if err := json.Unmarshal([]byte(output.text), &result); err != nil {
+		return mcpResult{text: err.Error(), isError: true, thrown: true}
+	}
+	if result.TotalHits == 0 {
+		var graphs []graph.GraphV1
+		if wiring, err := cache.loadGraph(contextDir); err == nil {
+			graphs = append(graphs, *wiring)
+		}
+		return mcpResult{text: scopeNote + grepZeroHitNote(result, graphs...), isError: false}
+	}
+	fitted := fitGrepResult(result, mcpGrepBudget)
+	text := scopeNote + formatGrepResult(fitted)
+	budget := mcpGrepSourceBudget
+	if fitted.Truncated.Hits > 0 {
+		budget = mcpGrepBudget // hits past the cap make no narrow search
+	}
+	if inlined := inlineGrepSource(root, fitted, budget); inlined != "" {
+		text = scopeNote + inlined
+	}
+	if note := grepRemainderNote(result, fitted); note != "" {
+		text += note + "\n"
+	}
+	if result.Saved != nil {
+		recordQuerySavings(contextDir, len(text), result.Saved.BaselineChars)
+	}
+	return mcpResult{text: text, isError: false}
+}
+
+// mcpRepoMap answers graft_repo_map, listing fewer directories when the whole
+// map would not fit one answer.
+func mcpRepoMap(root, contextDir string, args map[string]any, cache *queryCache) mcpResult {
+	maxDirs := 0
+	if value, ok := mcpNumber(args["max_dirs"]); ok && value > 0 {
+		maxDirs = int(value)
+	}
+	if _, ok := graph.ReadWorkspaceChildren(contextDir); ok {
+		return mcpResult{text: graph.FederateMap(root, contextDir, graph.RepoMapOptions{MaxDirs: maxDirs}, cache.loadGraph), isError: false}
+	}
+	loaded, err := cache.loadGraph(contextDir)
+	if err != nil {
+		return mcpResult{text: "no graph found — run `graft build` first", isError: true}
+	}
+	repoMap := graph.BuildRepoMap(*loaded, graph.RepoMapOptions{MaxDirs: maxDirs})
+	text := graph.FormatRepoMap(repoMap)
+	// Past the ceiling the map lists fewer directories, keeping its
+	// hotspots; the dropped ones are counted. 64 characters are left for
+	// the line that says so.
+	if limit := mcpResultCeiling - 64; savings.Length(text) > limit {
+		shown := len(repoMap.Dirs)
+		for _, scope := range repoMap.Scopes {
+			shown = max(shown, len(scope.Dirs))
+		}
+		for savings.Length(text) > limit && shown > 1 {
+			shown = max(shown*limit/savings.Length(text), 1)
+			repoMap = graph.BuildRepoMap(*loaded, graph.RepoMapOptions{MaxDirs: shown})
+			text = graph.FormatRepoMap(repoMap)
+		}
+		text += fmt.Sprintf("max_dirs %d is what one answer holds\n", shown)
+	}
+	if repoMap.Saved != nil {
+		recordQuerySavings(contextDir, len(text), repoMap.Saved.BaselineChars)
+	}
+	return mcpResult{text: text, isError: false}
 }
 
 // mcpRunCommand runs a CLI command with options built from tool arguments; a

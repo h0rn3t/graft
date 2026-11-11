@@ -70,8 +70,8 @@ func TestMCPRefreshHandsItsGraphToQueries(t *testing.T) {
 			if err != nil || wiring != written || index != writtenIndex {
 				t.Errorf("cache.load(%q) = (%p, %p, %v), want the refreshed graph and index (%p, %p) without decoding them", dir, wiring, index, err, written, writtenIndex)
 			}
-			if fromDisk := readAskIndex(filepath.Join(dir, ".cache", "ask-index.json")); !reflect.DeepEqual(writtenIndex, fromDisk) {
-				t.Errorf("refreshed ask index = %+v, want what readAskIndex decodes from its file, %+v", writtenIndex, fromDisk)
+			if fromDisk := graph.ReadAskIndex(filepath.Join(dir, ".cache", "ask-index.json")); !reflect.DeepEqual(writtenIndex, fromDisk) {
+				t.Errorf("refreshed ask index = %+v, want what ReadAskIndex decodes from its file, %+v", writtenIndex, fromDisk)
 			}
 			if fromDisk, err := graph.Read(graph.WiringPath(dir)); err != nil || !reflect.DeepEqual(written, fromDisk) {
 				t.Errorf("refreshed graph = %+v, want what graph.Read decodes from its file, %+v (error %v)", written, fromDisk, err)

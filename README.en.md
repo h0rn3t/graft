@@ -436,6 +436,7 @@ Besides the hooks and `statusLine`, `init` sets `subagentStatusLine`, adds `Bash
 graft build [dir]                    # build the graph and per-file cards
 graft build --extensions .ts .py     # restrict source extensions for this build only
 graft build --include-dir <name>     # index a normally skipped directory name (vendor, build, …); repeatable, saved
+graft build --exclude-dir <path>     # leave out this repo-relative subtree (fixtures, copies, …); repeatable, saved
 graft build --only-dir <path>        # index only this repo-relative subtree; repeatable, kept by later builds
 graft build --no-lsp                 # skip the language server (used by default when on PATH)
 graft build --no-reuse               # re-parse every file and ask the language server again instead of reusing caches
@@ -520,7 +521,7 @@ graft --dir <path> <command>         # use a context directory other than <repo>
 graft --version, -v                  # print the installed version
 ```
 
-`--include-dir` and the two `follow` choices are saved in `.graft/config.json`;
+`--include-dir`, `--exclude-dir` and the two `follow` choices are saved in `.graft/config.json`;
 `--only-dir` is kept in the graph's fingerprint, so later builds and refreshes
 stay in that subtree until `graft/` is deleted. `--extensions` lasts one build:
 the next refresh indexes every supported language again.
@@ -906,13 +907,16 @@ Graft needs no configuration. These environment variables change its defaults:
 | `GRAFT_NO_IGNORE=1` | don't add graft's block to `.ignore` |
 | `GRAFT_MCP_COMMAND` | the command `init` writes into MCP configs, instead of `graft` or the binary's absolute path |
 | `GRAFT_NO_STATUSLINE=1` | don't write `statusLine` and `subagentStatusLine` at `init` or upkeep |
+| `GOMEMLIMIT` | Go's own soft memory limit, e.g. `GOMEMLIMIT=1GiB`. `graft mcp` otherwise keeps itself under 640 MiB, or under one and a half times what its graphs take when that is more |
 
 From Claude Code, graft reads `CLAUDE_PROJECT_DIR` (the repo the hooks and the
 statusline describe) and `CLAUDE_CONFIG_DIR` (where user-level Claude settings
 live, `~/.claude` by default).
 
 `graft build` keeps its repo choices in `<repo>/.graft/config.json`: `includeDirs`
-(from `--include-dir`), `followSubmodules` and `followNestedRepos`. The file is
+(from `--include-dir`), `excludeDirs` (from `--exclude-dir`), `followSubmodules`
+and `followNestedRepos`. Every later build, refresh and `graft check` walks the
+same files; edit the file to drop a directory from either list. The file is
 added to `.gitignore`, and `graft uninstall` leaves it in place.
 
 ---
