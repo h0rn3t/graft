@@ -70,8 +70,9 @@ var (
 )
 
 // parseShellCommand finds the command's program after leading cd, export,
-// env and assignments; segments after the first program are ignored. A
-// command with no program has no intent.
+// env and assignments. A command with no program, or with a second one, has
+// no intent: a pipeline's exit code and output cannot be told apart by
+// program, and an error from the second one was learned as the first's.
 func parseShellCommand(command string) shellCommand {
 	parsed := shellCommand{env: map[string]string{}}
 	for _, segment := range shellSegments(command) {
@@ -79,6 +80,8 @@ func parseShellCommand(command string) shellCommand {
 		switch {
 		case len(words) == 0:
 			continue
+		case parsed.intent != "":
+			return shellCommand{}
 		case words[0] == "cd":
 			if len(words) > 1 {
 				if strings.HasPrefix(words[1], "/") {
@@ -134,9 +137,11 @@ func parseShellCommand(command string) shellCommand {
 				parsed.form += " …"
 			}
 		}
-		return parsed
 	}
-	return shellCommand{}
+	if parsed.intent == "" {
+		return shellCommand{}
+	}
+	return parsed
 }
 
 // shellTool skips the words that only start the tool a command runs — a
@@ -231,11 +236,13 @@ func shellWords(segment string) []string {
 
 // shellErrorLine returns the first line of a result that names an error. skip
 // is true for a result that is no command outcome at all: another hook's
-// denial, or the user declining the call.
+// denial, the user or Claude Code's permission check declining the call, or
+// output Claude Code lost.
 func shellErrorLine(text string) (line string, skip bool) {
 	trimmed := strings.TrimSpace(text)
 	if strings.HasPrefix(trimmed, "PreToolUse:") || strings.Contains(trimmed, "hook error:") ||
-		strings.Contains(trimmed, "doesn't want to proceed") {
+		strings.Contains(trimmed, "doesn't want to proceed") || strings.HasPrefix(trimmed, "Permission for this ") ||
+		strings.HasPrefix(trimmed, "Command output was lost") {
 		return "", true
 	}
 	for line := range strings.Lines(trimmed) {

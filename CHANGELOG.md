@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Micro-skills learn only from commands they can attribute.** A shell command was reduced to its first program, while its exit code and error line came from the whole pipeline, so `ls … && psql …` was learned as "`ls` fails with `column … does not exist`" and a `grep` whose matches held the word `error` as a failing `grep`. Claude Code's permission denials and lost output were learned as failures too. Replayed over 170 real sessions in five repositories, every one of the 26 candidates came from such a call, none was ever validated, and their false contradictions would have outvoted a real fact. A command with a second program (after `|`, `&&`, `;` or a newline; leading `cd`, `export` and assignments still count as setup) is no longer observed, nor is a result Claude Code produced itself. The same replay now yields 1 candidate.
+
 ## 0.7.0-beta.1 - 2026-11-11
 
 ### Added

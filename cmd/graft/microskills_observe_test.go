@@ -21,7 +21,10 @@ func TestParseShellCommand(t *testing.T) {
 		{command: "cd web && npm run build", wantIntent: "npm run", wantForm: "npm run …", wantDir: "web"},
 		{command: "FOO=1 make test", wantIntent: "make test", wantForm: "make test", wantEnv: map[string]string{"FOO": "1"}},
 		{command: "export FOO=1 && make test", wantIntent: "make test", wantForm: "make test", wantEnv: map[string]string{"FOO": "1"}},
-		{command: `openspec instructions x --json | python3 -c "import json"`, wantIntent: "openspec instructions", wantForm: "openspec instructions … --json"},
+		{command: `openspec instructions x --json | python3 -c "import json"`, wantIntent: ""},
+		{command: "grep -n x f.go && psql -c 'select 1'", wantIntent: ""},
+		{command: "make test; cd sub", wantIntent: ""},
+		{command: "go test ./...\n", wantIntent: "go test", wantForm: "go test …"},
 		{command: "go test -run 'TestX|TestY' ./cmd/graft", wantIntent: "go test", wantForm: "go test -run …"},
 		{command: "golangci-lint run --fix=true ./...", wantIntent: "golangci-lint run", wantForm: "golangci-lint run --fix=… …"},
 		{command: "python3 -m pytest -x tests/", wantIntent: "pytest", wantForm: "python3 -m pytest -x …"},
@@ -58,6 +61,8 @@ func TestShellErrorLine(t *testing.T) {
 		{name: "no error words", text: "Exit code 1\nfoo.go:12: x", want: ""},
 		{name: "hook denial", text: "PreToolUse:Bash hook error: [bash x]: blocked, error", skip: true},
 		{name: "user rejection", text: "The user doesn't want to proceed with this tool use. Error", skip: true},
+		{name: "classifier denial", text: "Permission for this action was denied by the Claude Code auto mode classifier. Reason: error", skip: true},
+		{name: "lost output", text: "Command output was lost: the temp filesystem is full. Error", skip: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
