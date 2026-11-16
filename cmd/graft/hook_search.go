@@ -91,6 +91,15 @@ func hookSearchScope(root, cwd string, search hookSearch, paths []string) (hookS
 		paths = []string{"."}
 	}
 	for _, path := range paths {
+		// The shell had already expanded the path the search ran on: a
+		// variable or a home directory names a place this hook cannot know,
+		// and a glob names files of the directory before its first wildcard.
+		if strings.HasPrefix(path, "~") || strings.ContainsAny(path, "$`") {
+			return hookSearch{}, false
+		}
+		if wildcard := strings.IndexAny(path, "*?["); wildcard >= 0 {
+			path = filepath.Dir(path[:wildcard] + "x")
+		}
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(cwd, path)
 		}

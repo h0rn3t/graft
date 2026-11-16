@@ -10,6 +10,10 @@
 
 With the three changes, on this repository (6,400 nodes, 8 cores) a hook takes: prompt 442 → 266 ms, after an edit 251 → 171 ms, after a shell command 73 → 34 ms, after a graft tool call 47 → 7 ms, session start 103 → 63 ms, stop 40 → 10 ms. `graft ask` from the CLI takes 210 ms instead of 280 ms. Every hook's output is byte-identical.
 
+### Fixed
+
+- **The search nudge no longer names a path that cannot match.** After `grep -rn foo internal/graph/*.go` or `grep -rn foo $R/internal` the nudge suggested `graft_find_all` with `in` set to the glob or the variable as typed. `in` is a path prefix, so that call searched every indexed file instead, or failed from the CLI. Replayed over two weeks of real sessions in three repositories, 182 of the 620 searches the hook restated carried such a path. A glob is now reduced to the directory before its first wildcard, and a path through a shell variable, a backquote or `~` gets no nudge, since the hook cannot know where it points.
+
 ## 0.7.0-beta.2 - 2026-11-12
 
 ### Fixed
