@@ -3,7 +3,6 @@ package graph
 import (
 	"bytes"
 	"cmp"
-	"encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
@@ -32,8 +31,8 @@ func Read(path string) (*GraphV1, error) {
 	if err != nil {
 		return nil, err
 	}
-	var graph *GraphV1
-	if err := json.Unmarshal(data, &graph); err != nil {
+	graph, err := decodeGraph(data)
+	if err != nil {
 		return nil, err
 	}
 	if graph == nil {

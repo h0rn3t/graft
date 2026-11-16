@@ -110,9 +110,9 @@ func LoadWorkspaceGraphs(root, contextDir string, read func(contextDir string) (
 		}
 		graphPath := filepath.Join(children[i], "graft", GraphDir, GraphFile)
 		if read == nil {
-			var graph *GraphV1
-			if data, err := rootFS.ReadFile(graphPath); err == nil && json.Unmarshal(data, &graph) == nil {
-				graphs[i] = graph
+			if data, err := rootFS.ReadFile(graphPath); err == nil {
+				// A graph that does not decode is nil, and so a missing child.
+				graphs[i], _ = decodeGraph(data)
 			}
 			return
 		}

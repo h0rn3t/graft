@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"testing"
 
 	"github.com/h0rn3t/Graft/internal/graph"
@@ -74,7 +75,7 @@ func TestHookGoldensMatchGo(t *testing.T) {
 			t.Cleanup(func() { hookHomeDir = home })
 			switch name {
 			case "hooks/02-prompt":
-				hookAsk = func(context.Context, string, string, string, string) (graph.AskResult, bool) {
+				hookAsk = func(context.Context, string, string, string, string, io.Writer) (graph.AskResult, bool) {
 					coverage := 1.0
 					return graph.AskResult{
 						Query: "auth verify", Mode: "lexical", Coverage: &coverage, CoverageStrong: &coverage,

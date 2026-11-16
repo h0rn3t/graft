@@ -693,16 +693,9 @@ func hookPromptAskTimeout(root string) time.Duration {
 	return min(budget, hookTimeoutCeiling)
 }
 
-func lastHookFileScope(root, lastFile string, stderr io.Writer) string {
-	if lastFile == "" {
-		return ""
-	}
-	wiring, err := graph.Read(graph.WiringPath(hookContextDir(root)))
-	if err != nil {
-		return ""
-	}
+func lastHookFileScope(wiring graph.GraphV1, lastFile string, stderr io.Writer) string {
 	scopes := wiring.Meta.Scopes
-	if scopes == nil || len(*scopes) <= 1 {
+	if lastFile == "" || scopes == nil || len(*scopes) <= 1 {
 		return ""
 	}
 	// A repo-relative lastFile names one file; a bare base name, as older
@@ -741,7 +734,10 @@ func lastHookFileScope(root, lastFile string, stderr io.Writer) string {
 	return prefix
 }
 
-func askHookGraph(ctx context.Context, root, contextDir, prompt, scope string) (graph.AskResult, bool) {
+// askHookGraph answers prompt from the repository's graph, within the scope
+// of lastFile, the file the agent last edited. The graph is read once and
+// serves both the scope and the answer.
+func askHookGraph(ctx context.Context, root, contextDir, prompt, lastFile string, stderr io.Writer) (graph.AskResult, bool) {
 	_ = graph.EnsureFreshGraph(root, graph.RefreshOptions{Source: sourcefiles.Options{OutDir: contextDir}})
 	select {
 	case <-ctx.Done():
@@ -754,7 +750,8 @@ func askHookGraph(ctx context.Context, root, contextDir, prompt, scope string) (
 	}
 	limit := 3.0
 	result, err := graph.Ask(*loaded, prompt, graph.AskOptions{
-		Limit: &limit, In: scope, Index: graph.ReadAskIndex(filepath.Join(contextDir, ".cache", "ask-index.json")),
+		Limit: &limit, In: lastHookFileScope(*loaded, lastFile, stderr),
+		Index: graph.ReadAskIndex(filepath.Join(contextDir, ".cache", "ask-index.json")),
 	})
 	if err != nil {
 		return graph.AskResult{}, false
@@ -779,11 +776,11 @@ func handleHookPrompt(ctx context.Context, input hookInput, root string, stdout,
 		return
 	}
 	contextDir := hookContextDir(root)
-	scope := ""
+	lastFile := ""
 	if stats := readHookStats(root); stats != nil && stats.LastFile != nil {
-		scope = lastHookFileScope(root, *stats.LastFile, stderr)
+		lastFile = *stats.LastFile
 	}
-	result, ok := hookAsk(ctx, root, contextDir, prompt, scope)
+	result, ok := hookAsk(ctx, root, contextDir, prompt, lastFile, stderr)
 	if !ok {
 		return
 	}

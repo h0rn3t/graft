@@ -235,7 +235,7 @@ func newPushTurn(t *testing.T, id string) *pushTurn {
 	t.Setenv("GRAFT_DIR", "")
 	ask := hookAsk
 	t.Cleanup(func() { hookAsk = ask })
-	hookAsk = func(context.Context, string, string, string, string) (graph.AskResult, bool) {
+	hookAsk = func(context.Context, string, string, string, string, io.Writer) (graph.AskResult, bool) {
 		return graph.AskResult{
 			Query: "auth verify", Mode: "structural",
 			Hits:  []graph.AskHit{{Kind: "symbol", Title: "verify · function", Pointer: "src/auth.ts:L1-L4", Score: 1}},
@@ -358,7 +358,7 @@ func TestHookPromptRespectsPushDecision(t *testing.T) {
 	turn := newPushTurn(t, "fresh")
 	negativeLedger(t, turn.root)
 	asked := false
-	hookAsk = func(context.Context, string, string, string, string) (graph.AskResult, bool) {
+	hookAsk = func(context.Context, string, string, string, string, io.Writer) (graph.AskResult, bool) {
 		asked = true
 		return graph.AskResult{}, false
 	}

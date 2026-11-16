@@ -19,7 +19,7 @@ func TestHookPromptDeduplicatesContentPerAgent(t *testing.T) {
 	t.Cleanup(func() { hookAsk = ask })
 	code := "func verify() bool { return true }"
 	sourceHash := "original"
-	hookAsk = func(context.Context, string, string, string, string) (graph.AskResult, bool) {
+	hookAsk = func(context.Context, string, string, string, string, io.Writer) (graph.AskResult, bool) {
 		return graph.AskResult{Hits: []graph.AskHit{{
 			Title: "verify", Pointer: "auth.go:L1-L1", Code: code, SourceHash: sourceHash,
 		}}}, true
@@ -79,7 +79,7 @@ func TestAskHookGraphIncludesBodyRevision(t *testing.T) {
 	if _, err := graph.Write(wiring, contextDir); err != nil {
 		t.Fatalf("graph.Write(auth graph) = %v, want nil", err)
 	}
-	result, ok := askHookGraph(t.Context(), root, contextDir, "verify", "")
+	result, ok := askHookGraph(t.Context(), root, contextDir, "verify", "", io.Discard)
 	if !ok || len(result.Hits) == 0 {
 		t.Fatalf("askHookGraph(verify) = (%#v, %t), want a hit", result, ok)
 	}
@@ -90,7 +90,7 @@ func TestAskHookGraphIncludesBodyRevision(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "auth.go"), []byte(strings.ReplaceAll(source, "return true", "return false")), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(changed auth.go) = %v, want nil", err)
 	}
-	changed, ok := askHookGraph(t.Context(), root, contextDir, "verify", "")
+	changed, ok := askHookGraph(t.Context(), root, contextDir, "verify", "", io.Discard)
 	if !ok || len(changed.Hits) == 0 {
 		t.Fatalf("askHookGraph(changed verify) = (%#v, %t), want a hit", changed, ok)
 	}
@@ -106,7 +106,7 @@ func TestHookSessionStartPermitsContextReinjection(t *testing.T) {
 	t.Cleanup(func() { hookAsk, hookHomeDir = ask, home })
 	homeDir := t.TempDir()
 	hookHomeDir = func() string { return homeDir }
-	hookAsk = func(context.Context, string, string, string, string) (graph.AskResult, bool) {
+	hookAsk = func(context.Context, string, string, string, string, io.Writer) (graph.AskResult, bool) {
 		return graph.AskResult{Hits: []graph.AskHit{{
 			Title: "verify", Pointer: "auth.go:L1-L1", Code: "func verify() {}",
 		}}}, true

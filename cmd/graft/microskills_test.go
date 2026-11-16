@@ -488,8 +488,8 @@ func TestHookSessionStartFactsDisabled(t *testing.T) {
 func TestHookPromptAddsScopedFacts(t *testing.T) {
 	turn := newPushTurn(t, "p")
 	ask := hookAsk
-	hookAsk = func(ctx context.Context, root, dir, prompt, scope string) (graph.AskResult, bool) {
-		result, ok := ask(ctx, root, dir, prompt, scope)
+	hookAsk = func(ctx context.Context, root, dir, prompt, lastFile string, stderr io.Writer) (graph.AskResult, bool) {
+		result, ok := ask(ctx, root, dir, prompt, lastFile, stderr)
 		result.Hits[0].Pointer = "services/billing/auth.ts:L1-L4"
 		result.Hits[0].SourceHash = prompt
 		return result, ok

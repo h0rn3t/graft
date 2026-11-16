@@ -16,7 +16,7 @@ func TestHookPromptSkipsHostEnvelopes(t *testing.T) {
 	root := t.TempDir()
 	ask := hookAsk
 	t.Cleanup(func() { hookAsk = ask })
-	hookAsk = func(context.Context, string, string, string, string) (graph.AskResult, bool) {
+	hookAsk = func(context.Context, string, string, string, string, io.Writer) (graph.AskResult, bool) {
 		return graph.AskResult{Hits: []graph.AskHit{{
 			Title: "verify", Pointer: "auth.go:L1-L1", Code: "func verify() bool { return true }",
 		}}}, true

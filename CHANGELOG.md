@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Every graft command starts about 40 ms sooner.** A dependency of the progress bar, `go-runewidth` v0.0.27, filled two tables of 1.1 million entries each time the program started, whether or not anything was drawn: 29 ms of the 47 ms `graft version` took. Every hook, every statusline refresh and every CLI query paid it. Version 0.0.31 builds no table at start, and `graft version` now takes 8 ms.
+- **A graph loads in about half the time and half the memory.** `wiring.json` was decoded through generic struct decoding, which checks the whole text before reading it and allocates each edge's endpoints again although they repeat node IDs. A file in the shape graft writes is now read token by token, with every repeated string stored once and the node and edge lists sized from the file's own counts. Any other file — an unknown key, a repeated key, a value of another type — still goes through `encoding/json`, so the graph is always the one that decoder returns; a fuzz test compares the two. For a graph of 6,400 nodes and 27,000 edges a load went from 73 ms to 41 ms and from 27 MB to 14 MB allocated. Every query, hook and MCP server start reads the graph, and a workspace query reads one per repository.
+- **The prompt hook reads the graph once.** It decoded `wiring.json` twice for every prompt: first to find the scope of the file the agent last edited, which in a repository of one scope found nothing, then again to answer. The scope is now resolved on the graph loaded for the answer, after the refresh rather than before it.
+
+With the three changes, on this repository (6,400 nodes, 8 cores) a hook takes: prompt 442 → 266 ms, after an edit 251 → 171 ms, after a shell command 73 → 34 ms, after a graft tool call 47 → 7 ms, session start 103 → 63 ms, stop 40 → 10 ms. `graft ask` from the CLI takes 210 ms instead of 280 ms. Every hook's output is byte-identical.
+
 ## 0.7.0-beta.2 - 2026-11-12
 
 ### Fixed

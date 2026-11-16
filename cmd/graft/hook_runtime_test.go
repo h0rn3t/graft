@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -95,8 +96,40 @@ func TestHookEditedFileContract(t *testing.T) {
 	}
 }
 
-func TestHookLastFileScopeContract(t *testing.T) {
+// The prompt hook answers within the scope of the file the agent last
+// edited, which askHookGraph resolves on the graph it loads for the answer.
+func TestHookAskStaysInLastFileScope(t *testing.T) {
 	root := t.TempDir()
+	for _, scope := range []string{"backend", "frontend"} {
+		writeFixtureFile(t, root, scope+"/go.mod", "module "+scope+"\n\ngo 1.27\n")
+		// A directory with fewer than five symbols is not kept as a scope.
+		writeFixtureFile(t, root, scope+"/session.go", "package "+scope+"\n\n"+
+			"// RenewSession extends the session token.\nfunc RenewSession() bool { return true }\n\n"+
+			"func one() {}\n\nfunc two() {}\n\nfunc three() {}\n\nfunc four() {}\n")
+	}
+	var stdout, stderr bytes.Buffer
+	if status := run([]string{"build", root}, &stdout, &stderr); status != 0 {
+		t.Fatalf("run(build) = %d, stderr %q", status, stderr.String())
+	}
+	for _, tc := range []struct {
+		lastFile string
+		backend  bool
+	}{
+		{lastFile: "frontend/session.go", backend: false},
+		{lastFile: "", backend: true},
+	} {
+		result, ok := askHookGraph(t.Context(), root, hookContextDir(root), "renew the session token", tc.lastFile, io.Discard)
+		if !ok || len(result.Hits) == 0 {
+			t.Fatalf("askHookGraph(lastFile %q) = (%d hits, %t), want hits", tc.lastFile, len(result.Hits), ok)
+		}
+		backend := slices.ContainsFunc(result.Hits, func(hit graph.AskHit) bool { return strings.HasPrefix(hit.Pointer, "backend/") })
+		if backend != tc.backend {
+			t.Errorf("askHookGraph(lastFile %q) hits %+v: a backend hit = %t, want %t", tc.lastFile, result.Hits, backend, tc.backend)
+		}
+	}
+}
+
+func TestHookLastFileScopeContract(t *testing.T) {
 	scopes := []graph.ScopeV1{{Prefix: ""}, {Prefix: "backend"}, {Prefix: "frontend"}}
 	wiring := graph.GraphV1{
 		Meta: graph.GraphMeta{Version: 1, Scopes: &scopes},
@@ -106,23 +139,17 @@ func TestHookLastFileScopeContract(t *testing.T) {
 			{ID: "root.go", Name: "root.go", Kind: "file", Path: "root.go"},
 		},
 	}
-	if _, err := graph.Write(wiring, hookContextDir(root)); err != nil {
-		t.Fatalf("graph.Write() error = %v, want nil", err)
-	}
 	var stderr bytes.Buffer
-	if got := lastHookFileScope(root, "auth.go", &stderr); got != "" || stderr.Len() == 0 {
+	if got := lastHookFileScope(wiring, "auth.go", &stderr); got != "" || stderr.Len() == 0 {
 		t.Errorf("lastHookFileScope(ambiguous) = (%q, %q), want empty with diagnostic", got, stderr.String())
 	}
 	stderr.Reset()
-	if got := lastHookFileScope(root, "frontend/auth.go", &stderr); got != "frontend" || stderr.Len() != 0 {
+	if got := lastHookFileScope(wiring, "frontend/auth.go", &stderr); got != "frontend" || stderr.Len() != 0 {
 		t.Errorf("lastHookFileScope(repo-relative) = (%q, %q), want frontend", got, stderr.String())
 	}
 	stderr.Reset()
 	wiring.Nodes = wiring.Nodes[:1]
-	if _, err := graph.Write(wiring, hookContextDir(root)); err != nil {
-		t.Fatalf("graph.Write(unique) error = %v, want nil", err)
-	}
-	if got := lastHookFileScope(root, "auth.go", &stderr); got != "backend" || stderr.Len() != 0 {
+	if got := lastHookFileScope(wiring, "auth.go", &stderr); got != "backend" || stderr.Len() != 0 {
 		t.Errorf("lastHookFileScope(unique) = (%q, %q), want backend", got, stderr.String())
 	}
 }
@@ -187,7 +214,7 @@ func TestHookStopRunsOneSyncAndReleasesLock(t *testing.T) {
 func TestHookAskTimeoutIsFailSoft(t *testing.T) {
 	original := hookAsk
 	t.Cleanup(func() { hookAsk = original })
-	hookAsk = func(ctx context.Context, _, _, _, _ string) (graph.AskResult, bool) {
+	hookAsk = func(ctx context.Context, _, _, _, _ string, _ io.Writer) (graph.AskResult, bool) {
 		<-ctx.Done()
 		return graph.AskResult{}, false
 	}
