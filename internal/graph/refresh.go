@@ -399,9 +399,12 @@ func EnsureFreshGraph(root string, options RefreshOptions) (result RefreshResult
 // carryOverLSPEdges keeps the compiler-resolved call edges of a graph built
 // with --lsp, which a refresh does not recompute. An edge survives when both
 // ends still exist, the calling file's content hash is the one it had in the
-// prior graph, and the caller is not in requery, the functions about to be
-// asked again. The hash, not the drift record, decides: after an extractor
-// upgrade every file is re-parsed with no drift known, yet most are unchanged.
+// prior graph, the caller has no call into a file whose hash changed (a call
+// resolves through the declarations it names, so an edit there — a build
+// constraint, a moved definition — can send it elsewhere), and the caller is
+// not in requery, the functions about to be asked again. The hash, not the
+// drift record, decides: after an extractor upgrade every file is re-parsed
+// with no drift known, yet most are unchanged.
 func carryOverLSPEdges(graph *GraphV1, prior GraphV1, requery map[string]bool) {
 	priorHash := make(map[string]string)
 	for _, node := range prior.Nodes {
@@ -411,12 +414,25 @@ func carryOverLSPEdges(graph *GraphV1, prior GraphV1, requery map[string]bool) {
 	}
 	pathOf := make(map[string]string, len(graph.Nodes))
 	unchanged := make(map[string]bool)
+	// changed holds the files edited, added or removed since prior.
+	changed := make(map[string]bool)
 	for _, node := range graph.Nodes {
 		pathOf[node.ID] = node.Path
-		if node.Kind == "file" && node.BodyHash != "" && priorHash[node.Path] == node.BodyHash {
+		if node.Kind != "file" {
+			continue
+		}
+		if node.BodyHash != "" && priorHash[node.Path] == node.BodyHash {
 			unchanged[node.Path] = true
+		} else {
+			changed[node.Path] = true
 		}
 	}
+	for path := range priorHash {
+		if !unchanged[path] {
+			changed[path] = true // edited, or removed since prior
+		}
+	}
+	affected := callersIntoChanged(*graph, prior, changed)
 	existing := make(map[string]struct{}, len(graph.Edges))
 	for _, edge := range graph.Edges {
 		existing[edge.Source+"\x00"+string(edge.Relation)+"\x00"+edge.Target] = struct{}{}
@@ -427,7 +443,7 @@ func carryOverLSPEdges(graph *GraphV1, prior GraphV1, requery map[string]bool) {
 		}
 		sourcePath, sourceOK := pathOf[edge.Source]
 		_, targetOK := pathOf[edge.Target]
-		if !sourceOK || !targetOK || !unchanged[sourcePath] || requery[edge.Source] {
+		if !sourceOK || !targetOK || !unchanged[sourcePath] || affected[edge.Source] || requery[edge.Source] {
 			continue
 		}
 		key := edge.Source + "\x00" + string(edge.Relation) + "\x00" + edge.Target

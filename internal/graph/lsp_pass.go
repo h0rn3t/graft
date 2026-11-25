@@ -213,20 +213,27 @@ func lspRequery(graph, prior GraphV1, changed map[string]bool, languages []strin
 	if len(changed) == 0 {
 		return requery
 	}
-	asked := make(map[string]bool)
+	callers := callersIntoChanged(graph, prior, changed)
+	for _, node := range graph.Nodes {
+		if (node.Kind == "function" || node.Kind == "method") && slices.Contains(languages, lspLanguage(node.Path)) &&
+			(changed[node.Path] || callers[node.ID]) {
+			requery[node.ID] = true
+		}
+	}
+	return requery
+}
+
+// callersIntoChanged returns the IDs of the nodes with a call into one of the
+// changed files, in graph or among prior's language-server edges.
+func callersIntoChanged(graph, prior GraphV1, changed map[string]bool) map[string]bool {
+	callers := make(map[string]bool)
 	pathOf := make(map[string]string, len(graph.Nodes))
 	for _, node := range graph.Nodes {
 		pathOf[node.ID] = node.Path
-		if (node.Kind == "function" || node.Kind == "method") && slices.Contains(languages, lspLanguage(node.Path)) {
-			asked[node.ID] = true
-			if changed[node.Path] {
-				requery[node.ID] = true
-			}
-		}
 	}
 	for _, edge := range graph.Edges {
-		if asked[edge.Source] && changed[pathOf[edge.Target]] {
-			requery[edge.Source] = true
+		if changed[pathOf[edge.Target]] {
+			callers[edge.Source] = true
 		}
 	}
 	priorPath := make(map[string]string, len(prior.Nodes))
@@ -234,9 +241,9 @@ func lspRequery(graph, prior GraphV1, changed map[string]bool, languages []strin
 		priorPath[node.ID] = node.Path
 	}
 	for _, edge := range prior.Edges {
-		if edge.Confidence == "lsp_resolved" && asked[edge.Source] && changed[priorPath[edge.Target]] {
-			requery[edge.Source] = true
+		if edge.Confidence == "lsp_resolved" && changed[priorPath[edge.Target]] {
+			callers[edge.Source] = true
 		}
 	}
-	return requery
+	return callers
 }

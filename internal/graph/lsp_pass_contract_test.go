@@ -149,3 +149,47 @@ func TestRunLSPPassContract(t *testing.T) {
 		})
 	}
 }
+
+// A refresh carries a caller's language-server edges only while nothing its
+// calls resolve through changed. Flipping build constraints edits the files
+// that declare the callee, not the caller's own: the edge into b.go must go,
+// since the compiler may now resolve Target in c.go.
+func TestCarryOverLSPEdgesDropsCallsIntoChangedFiles(t *testing.T) {
+	file := func(path, hash string) NodeV1 {
+		return NodeV1{ID: path, Name: path, Kind: "file", Path: path, BodyHash: hash}
+	}
+	function := func(path, name string) NodeV1 {
+		return NodeV1{ID: path + "#" + name, Name: name, Kind: "function", Path: path}
+	}
+	nodes := func(bHash, cHash, dHash string) []NodeV1 {
+		return []NodeV1{
+			file("a.go", "a1"), function("a.go", "Caller"),
+			file("b.go", bHash), function("b.go", "Target"),
+			file("c.go", cHash), function("c.go", "Target"),
+			file("d.go", dHash), function("d.go", "Other"),
+		}
+	}
+	lspEdge := EdgeV1{Source: "a.go#Caller", Target: "b.go#Target", Relation: "calls", Confidence: "lsp_resolved", Line: 3}
+	prior := GraphV1{Nodes: nodes("b1", "c1", "d1"), Edges: []EdgeV1{lspEdge}}
+	for _, tt := range []struct {
+		name             string
+		bHash, cHash     string
+		dHash            string
+		wantCarriedEdges int
+	}{
+		{name: "build tags flipped in b.go and c.go", bHash: "b2", cHash: "c2", dHash: "d1", wantCarriedEdges: 0},
+		{name: "only the callee file changed", bHash: "b2", cHash: "c1", dHash: "d1", wantCarriedEdges: 0},
+		{name: "an unrelated file changed", bHash: "b1", cHash: "c1", dHash: "d2", wantCarriedEdges: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			graph := GraphV1{Nodes: nodes(tt.bHash, tt.cHash, tt.dHash)}
+			carryOverLSPEdges(&graph, prior, nil)
+			if got := len(graph.Edges); got != tt.wantCarriedEdges {
+				t.Errorf("carryOverLSPEdges(b.go %s, c.go %s, d.go %s) edges = %+v, want %d carried", tt.bHash, tt.cHash, tt.dHash, graph.Edges, tt.wantCarriedEdges)
+			}
+			if graph.Meta.EdgeCount != len(graph.Edges) {
+				t.Errorf("carryOverLSPEdges() meta edgeCount = %d, want %d", graph.Meta.EdgeCount, len(graph.Edges))
+			}
+		})
+	}
+}
