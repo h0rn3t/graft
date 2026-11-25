@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 - 2026-11-26
+
+### Fixed
+
+- **`graft init` and `graft uninstall` keep user hooks that share a block with graft's.** A hooks block holding both a graft command and a user command (for example two handlers under one `Stop` entry) was removed whole on reinstall and on uninstall, and both exited 0. Only graft's handlers are removed now; the block's matcher and its other handlers stay in their order, and the block goes only when nothing is left in it. This covers Claude Code settings, Codex's `hooks.json` and Cursor's `.cursor/hooks.json`.
+- **An ask index written for an older graph no longer hides current code.** Node ids survive an edit to a comment, so a fresh graph read with an older `ask-index.json` passed every check and ranked on the old terms: `graft ask` returned no match until the index was rewritten. `ask-index.json` now records the SHA-256 of the `wiring.json` it was written for (`"graph"`), and a query counts terms from the graph itself whenever the two differ. Indexes written by earlier versions carry no revision and are ignored until the next build or refresh rewrites them.
+- **A refresh no longer keeps language-server edges that a change may have moved.** A refresh carried a caller's `lsp_resolved` edges whenever the caller's own file was unchanged. Flipping build constraints edits only the files that declare the callee, so with gopls v0.24.0 `Caller → Target` still pointed at `b.go` after a refresh while a full `graft build --lsp` resolved it to `c.go`. An edge is now dropped when its caller calls into a file edited, added or removed since the previous graph; the next `graft build --lsp` asks again.
+
 ## 0.7.0-beta.3 - 2026-11-16
 
 ### Changed
