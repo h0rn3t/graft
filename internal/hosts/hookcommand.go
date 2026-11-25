@@ -1,6 +1,7 @@
 package hosts
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/h0rn3t/Graft/internal/jsonjs"
@@ -56,18 +57,46 @@ func isGraftEntry(entry jsonjs.Value) bool {
 	if !ok {
 		return false
 	}
-	if command, ok := mustGet(object, "command").(string); ok && IsGraftHookCommand(command) {
-		return true
-	}
 	handlers, _ := jsonjs.AsArray(mustGet(object, "hooks"))
-	for _, handler := range handlers {
-		handler, ok := jsonjs.AsObject(handler)
-		if !ok {
+	return isGraftHandler(object) || slices.ContainsFunc(handlers, isGraftHandler)
+}
+
+// isGraftHandler reports whether a hook object's own command runs graft's
+// hook runtime.
+func isGraftHandler(handler jsonjs.Value) bool {
+	object, ok := jsonjs.AsObject(handler)
+	if !ok {
+		return false
+	}
+	command, ok := mustGet(object, "command").(string)
+	return ok && IsGraftHookCommand(command)
+}
+
+// withoutGraftHooks returns entries with graft's hooks taken out. An entry
+// whose own command runs graft (Cursor) is dropped. In a handler block
+// (Claude Code, Codex) only graft's handlers go: the matcher and the other
+// handlers stay in their order, and the block is dropped only when no
+// handler is left. A trimmed block is a copy: callers merge into shallow
+// clones whose nested blocks the original settings still share.
+func withoutGraftHooks(entries []jsonjs.Value) []jsonjs.Value {
+	kept := make([]jsonjs.Value, 0, len(entries))
+	for _, entry := range entries {
+		if !isGraftEntry(entry) {
+			kept = append(kept, entry)
 			continue
 		}
-		if command, ok := mustGet(handler, "command").(string); ok && IsGraftHookCommand(command) {
-			return true
+		object, _ := jsonjs.AsObject(entry)
+		if isGraftHandler(object) {
+			continue
 		}
+		handlers, _ := jsonjs.AsArray(mustGet(object, "hooks"))
+		rest := slices.DeleteFunc(slices.Clone(handlers), isGraftHandler)
+		if len(rest) == 0 {
+			continue
+		}
+		trimmed := object.Clone()
+		trimmed.Set("hooks", rest)
+		kept = append(kept, trimmed)
 	}
-	return false
+	return kept
 }

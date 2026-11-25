@@ -236,7 +236,8 @@ func (f *files) removeTOMLSection(path string, apply bool) (RetractAction, error
 	return f.writeRest(path, kept)
 }
 
-// dropGraftHooks removes every graft hook entry from root.hooks.
+// dropGraftHooks removes graft's hooks from root.hooks, keeping the other
+// handlers that share a block with them.
 func dropGraftHooks(root *jsonjs.Object) {
 	hooks, ok := jsonjs.AsObject(mustGet(root, "hooks"))
 	if !ok {
@@ -247,7 +248,7 @@ func dropGraftHooks(root *jsonjs.Object) {
 		if !ok {
 			continue
 		}
-		kept := slices.DeleteFunc(slices.Clone(prior), isGraftEntry)
+		kept := withoutGraftHooks(prior)
 		if len(kept) == 0 {
 			hooks.Delete(event)
 		} else {

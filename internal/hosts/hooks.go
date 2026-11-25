@@ -212,14 +212,11 @@ func (f *files) mergeHookConfig(id, path string, withVersion bool, entries []hoo
 		if present && !isArray {
 			return skipped, nil
 		}
-		next := make([]jsonjs.Value, 0, len(prior)+1)
-		for _, item := range prior {
-			if cleared[entry.event] || !isGraftEntry(item) {
-				next = append(next, item)
-			}
+		if !cleared[entry.event] {
+			prior = withoutGraftHooks(prior)
+			cleared[entry.event] = true
 		}
-		cleared[entry.event] = true
-		hooks.Set(entry.event, append(next, render(entry)))
+		hooks.Set(entry.event, append(prior, render(entry)))
 	}
 	if jsonjs.Stringify(root, 0) == before {
 		return ConfigWrite{ID: id, Path: path, Action: ActionUnchanged}, nil

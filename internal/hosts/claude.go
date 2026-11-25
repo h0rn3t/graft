@@ -234,13 +234,7 @@ func mergeHookBlocks(merged *jsonjs.Object, binary, suffix, where string) []stri
 			warnings = append(warnings, where+": hooks."+entry.event+" is not an array — graft's "+entry.event+" hook was not added.")
 			continue
 		}
-		next := make([]jsonjs.Value, 0, len(prior)+len(entry.blocks))
-		for _, item := range prior {
-			if !isGraftEntry(item) {
-				next = append(next, item)
-			}
-		}
-		hooks.Set(entry.event, append(next, entry.blocks...))
+		hooks.Set(entry.event, append(withoutGraftHooks(prior), entry.blocks...))
 	}
 	return warnings
 }
