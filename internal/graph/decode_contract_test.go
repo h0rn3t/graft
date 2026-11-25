@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -135,6 +137,8 @@ func checkReadMatchesJSON(t *testing.T, data []byte) {
 	if err != nil {
 		t.Fatalf("Read(%q) error = %v, want nil", data, err)
 	}
+	sum := sha256.Sum256(data)
+	want.revision = hex.EncodeToString(sum[:]) // Read names the content it loaded
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Read(%q) = %+v, want %+v", data, got, want)
 	}

@@ -116,4 +116,8 @@ type GraphV1 struct {
 	Meta  GraphMeta `json:"meta"`
 	Nodes []NodeV1  `json:"nodes"`
 	Edges []EdgeV1  `json:"edges"`
+	// revision is the SHA-256 of the file Read loaded the graph from, and
+	// empty for a graph built in memory. An ask index is used with a read
+	// graph only when it was written for that revision.
+	revision string
 }

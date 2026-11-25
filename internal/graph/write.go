@@ -3,6 +3,8 @@ package graph
 import (
 	"bytes"
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
@@ -38,13 +40,23 @@ func Read(path string) (*GraphV1, error) {
 	if graph == nil {
 		return nil, errors.New("null graph")
 	}
+	graph.revision = graphRevision(data)
 	return graph, nil
+}
+
+// graphRevision names the content of a persisted graph file.
+func graphRevision(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // Write sorts and atomically persists graph under outDir. The serialized copy
 // omits body_text, which is stored separately for query-time indexing.
 func Write(graph GraphV1, outDir string) (string, error) {
-	return writeSortedGraph(sortedGraph(graph), outDir)
+	if _, err := writeSortedGraph(sortedGraph(graph), outDir); err != nil {
+		return "", err
+	}
+	return WiringPath(outDir), nil
 }
 
 // sortedGraph returns graph as Write persists it.
@@ -88,7 +100,7 @@ func sortedGraph(graph GraphV1) GraphV1 {
 }
 
 // writeSortedGraph persists a graph sortedGraph returned.
-func writeSortedGraph(sorted GraphV1, outDir string) (string, error) {
+func writeSortedGraph(sorted GraphV1, outDir string) (revision string, err error) {
 	path := WiringPath(outDir)
 	// json/v2 escapes neither HTML characters nor U+2028/U+2029, matching the
 	// JSON.stringify output TypeScript builds write.
@@ -100,7 +112,7 @@ func writeSortedGraph(sorted GraphV1, outDir string) (string, error) {
 	if err := fsutil.WriteFileAtomic(path, data, 0o644); err != nil {
 		return "", fmt.Errorf("write graph: %w", err)
 	}
-	return path, nil
+	return graphRevision(data), nil
 }
 
 // sortNodesByID returns a copy of nodes in localeCompare order of their ids;

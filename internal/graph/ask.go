@@ -114,11 +114,14 @@ type AskIndexDoc struct {
 
 // AskIndex is the validated, in-memory form of the ask token sidecar.
 type AskIndex struct {
-	Version    int
-	AvgBodyLen float64
-	DF         map[string]int
-	DocCount   int
-	Docs       map[string]AskIndexDoc
+	Version int
+	// GraphRevision is the revision of the graph file the index was written
+	// for; empty for an index built in memory with its graph.
+	GraphRevision string
+	AvgBodyLen    float64
+	DF            map[string]int
+	DocCount      int
+	Docs          map[string]AskIndexDoc
 }
 
 // AskHit is one structural or lexical result returned by Ask.
@@ -602,6 +605,11 @@ func askFallthroughNote(subject string) string {
 
 func askUsableIndex(index *AskIndex, wiring GraphV1) *AskIndex {
 	if index == nil || index.Version != AskIndexVersion || index.DocCount != len(index.Docs) {
+		return nil
+	}
+	// Node ids survive edits to the text an index counted, so only the
+	// revision tells an index written for an older graph from a current one.
+	if wiring.revision != "" && index.GraphRevision != wiring.revision {
 		return nil
 	}
 	ranked := 0

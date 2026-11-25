@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/h0rn3t/Graft/internal/jsonjs"
@@ -154,11 +155,12 @@ func TestWriteAskIndexEncodesLikeJSONJS(t *testing.T) {
 			}
 			want, err := jsonjs.Marshal(struct {
 				Version    int        `json:"version"`
+				Graph      string     `json:"graph"`
 				AvgBodyLen float64    `json:"avgBodyLen"`
 				DF         [][]any    `json:"df"`
 				DocCount   int        `json:"docCount"`
 				Docs       []document `json:"docs"`
-			}{AskIndexVersion, float64(length), pairs(df), 1, []document{{tc.id, pairs(name), pairs(path), pairs(bodyBag)}}}, "")
+			}{AskIndexVersion, "", float64(length), pairs(df), 1, []document{{tc.id, pairs(name), pairs(path), pairs(bodyBag)}}}, "")
 			if err != nil {
 				t.Fatalf("jsonjs.Marshal(index of %q) error = %v, want nil", tc.id, err)
 			}
@@ -166,5 +168,47 @@ func TestWriteAskIndexEncodesLikeJSONJS(t *testing.T) {
 				t.Errorf("WriteAskIndex(node %q) wrote\n%q\nwant\n%q", tc.id, got, append(want, '\n'))
 			}
 		})
+	}
+}
+
+// An edit that keeps every node id must not leave ask on the index of the
+// graph before it: the index written for that graph no longer matches the
+// graph file, so the query counts the current graph's terms instead.
+func TestAskIgnoresIndexOfOlderGraph(t *testing.T) {
+	outDir := t.TempDir()
+	write := func(summary string) {
+		t.Helper()
+		node := NodeV1{ID: "src/app.go#Greet", Name: "Greet", Kind: "function", Path: "src/app.go", Span: "L1-L3", Summary: &summary}
+		if _, err := Write(GraphV1{Meta: GraphMeta{Version: 1}, Nodes: []NodeV1{node}}, outDir); err != nil {
+			t.Fatalf("Write(summary %q) error = %v, want nil", summary, err)
+		}
+	}
+	write("welcomes the visitor")
+	before, err := Read(WiringPath(outDir))
+	if err != nil {
+		t.Fatalf("Read() error = %v, want nil", err)
+	}
+	if err := WriteAskIndex(outDir, *before); err != nil {
+		t.Fatalf("WriteAskIndex() error = %v, want nil", err)
+	}
+	write("salutes the zebra keeper") // the index is not rewritten
+
+	wiring, err := Read(WiringPath(outDir))
+	if err != nil {
+		t.Fatalf("Read() error = %v, want nil", err)
+	}
+	index := ReadAskIndex(askIndexPath(outDir))
+	if index == nil {
+		t.Fatal("ReadAskIndex() = nil, want the stale index read back")
+	}
+	result, err := Ask(*wiring, "zebra keeper", AskOptions{Index: index})
+	if err != nil {
+		t.Fatalf("Ask(zebra keeper) error = %v, want nil", err)
+	}
+	if !slices.ContainsFunc(result.Hits, func(hit AskHit) bool { return hit.Pointer == "src/app.go:L1-L3" }) {
+		t.Errorf("Ask(zebra keeper) with the older graph's index hits = %+v, want src/app.go:L1-L3", result.Hits)
+	}
+	if askUsableIndex(index, *before) == nil {
+		t.Error("askUsableIndex(index, the graph it was written for) = nil, want the index")
 	}
 }

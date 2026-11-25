@@ -53,11 +53,22 @@ func askOrderedCounts(text string) askBag {
 const AskIndexVersion = 3
 
 // WriteAskIndex stores the lexical body tokens omitted from the persisted graph.
+// The index is bound to the graph file already written under outDir, so call
+// it after Write; a query ignores an index written for another graph.
 // Texts unchanged since the last write take their bags from the term cache in
 // .cache/ask-terms.json instead of being tokenized again.
 func WriteAskIndex(outDir string, graph GraphV1) error {
+	// Without a graph file the index is bound to none, and no query uses it.
+	revision := ""
+	if data, err := os.ReadFile(WiringPath(outDir)); err == nil {
+		revision = graphRevision(data)
+	}
+	return writeAskIndex(outDir, graph, revision)
+}
+
+func writeAskIndex(outDir string, graph GraphV1, revision string) error {
 	file, bags := countAskIndex(graph, readAskTermBags(outDir))
-	data, err := file.encode()
+	data, err := file.encode(revision)
 	if err != nil {
 		return err
 	}
@@ -132,7 +143,7 @@ func countAskIndex(graph GraphV1, bags map[string]askBag) (askIndexFile, map[str
 
 // encode writes the file as jsonjs.Marshal writes its JSON shape, which spent
 // most of a refresh boxing each term pair.
-func (file askIndexFile) encode() ([]byte, error) {
+func (file askIndexFile) encode(revision string) ([]byte, error) {
 	// Like jsonjs.Marshal, AppendQuote writes invalid UTF-8 as U+FFFD; the
 	// error only reports that.
 	quote := func(data []byte, text string) []byte {
@@ -155,7 +166,9 @@ func (file askIndexFile) encode() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode ask index: %w", err)
 	}
-	data := fmt.Appendf(nil, `{"version":%d,"avgBodyLen":%s,"df":`, AskIndexVersion, average)
+	data := fmt.Appendf(nil, `{"version":%d,"graph":`, AskIndexVersion)
+	data = quote(data, revision)
+	data = fmt.Appendf(data, `,"avgBodyLen":%s,"df":`, average)
 	data = pairs(data, file.df)
 	data = append(strconv.AppendInt(append(data, `,"docCount":`...), int64(len(file.docs)), 10), `,"docs":[`...)
 	for i, doc := range file.docs {
@@ -354,6 +367,12 @@ func (r *askIndexReader) index() (*AskIndex, bool) {
 			var version uint32
 			version, ok = r.number()
 			index.Version, hasVersion = int(version), true
+		case "graph":
+			var revision jsontext.Token
+			if revision, err = r.dec.ReadToken(); err != nil || revision.Kind() != '"' {
+				return nil, false
+			}
+			index.GraphRevision, ok = revision.String(), true
 		case "avgBodyLen":
 			var average jsontext.Value
 			if average, err = r.dec.ReadValue(); err != nil || average.Kind() != '0' {

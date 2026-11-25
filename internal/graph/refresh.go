@@ -320,11 +320,12 @@ func EnsureFreshGraph(root string, options RefreshOptions) (result RefreshResult
 	_, cardsErr := os.Stat(filepath.Join(outDir, "INDEX.md"))
 	// persist writes the refreshed graph's files, the fingerprint only after
 	// the graph and index it vouches for, and words a failure as a note.
-	persist := func(writeIndex func() error) (refreshed bool, failure string) {
-		if _, err := writeSortedGraph(sorted, outDir); err != nil {
+	persist := func(writeIndex func(revision string) error) (refreshed bool, failure string) {
+		revision, err := writeSortedGraph(sorted, outDir)
+		if err != nil {
 			return false, fmt.Sprintf("graph refresh skipped: %v", err)
 		}
-		if err := writeIndex(); err != nil {
+		if err := writeIndex(revision); err != nil {
 			return true, fmt.Sprintf("ask index write failed: %v", err)
 		}
 		if err := WriteFingerprint(outDir, ExtractorID, built.Fingerprints, options.Source.OnlyDirs); err != nil {
@@ -339,7 +340,7 @@ func EnsureFreshGraph(root string, options RefreshOptions) (result RefreshResult
 		return true, ""
 	}
 	if memo == nil {
-		refreshed, failure := persist(func() error { return WriteAskIndex(outDir, built.Graph) })
+		refreshed, failure := persist(func(revision string) error { return writeAskIndex(outDir, built.Graph, revision) })
 		if failure != "" {
 			return RefreshResult{Refreshed: refreshed, Drift: drift, Note: failure}
 		}
@@ -359,8 +360,10 @@ func EnsureFreshGraph(root string, options RefreshOptions) (result RefreshResult
 	go func() {
 		defer close(written)
 		defer unlock()
-		_, failure := persist(func() error {
-			data, err := file.encode()
+		var onDisk string
+		_, failure := persist(func(revision string) error {
+			onDisk = revision
+			data, err := file.encode(revision)
 			if err != nil {
 				return err
 			}
@@ -379,6 +382,16 @@ func EnsureFreshGraph(root string, options RefreshOptions) (result RefreshResult
 			return
 		}
 		memo.graphFile, memo.indexFile = graphFile, indexFile
+		// Queries may hold the pair handed out while writing, so the revision
+		// goes on copies: from now on they read as the files on disk do.
+		graph := sorted
+		graph.revision = onDisk
+		memo.graph = &graph
+		if index != nil {
+			index := *index
+			index.GraphRevision = onDisk
+			memo.index = &index
+		}
 	}()
 	return RefreshResult{Refreshed: true, Drift: drift, Note: note}
 }

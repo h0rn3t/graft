@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"fmt"
 	"os"
@@ -148,6 +150,7 @@ func TestBuildGoldensMatchGo(t *testing.T) {
 						value = strings.ReplaceAll(value, filepath.ToSlash(rel), "{{ROOT}}/graft")
 					}
 				}
+				value = goldenGraphRevision.ReplaceAllString(value, `"graph":"<GRAPH>"`)
 				return strings.ReplaceAll(value, root, "{{ROOT}}")
 			}
 
@@ -158,6 +161,7 @@ func TestBuildGoldensMatchGo(t *testing.T) {
 			for name, content := range initialInputs {
 				writeCheckSource(t, root, filepath.FromSlash(name), content)
 			}
+			bindGoldenAskIndexes(t, root, initialInputs)
 			git := exec.Command("git", "init", "-q")
 			git.Dir = root
 			if output, err := git.CombinedOutput(); err != nil {
@@ -451,6 +455,7 @@ func TestSeededQueryGoldensMatchGo(t *testing.T) {
 	for rel, content := range graphFixture.Files {
 		writeCheckSource(t, repo, filepath.FromSlash(rel), materializeGolden(content, base, repo, home, elsewhere))
 	}
+	bindGoldenAskIndexes(t, repo, graphFixture.Files)
 
 	for _, name := range cliGoldenNames(t, "seeded") {
 		t.Run(filepath.Base(name), func(t *testing.T) {
@@ -483,6 +488,37 @@ var goldenDuration = regexp.MustCompile(`\b\d+(\.\d+)?\s?(ms|s)\b`)
 var goldenTime = regexp.MustCompile(`\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z`)
 var goldenCheckedAt = regexp.MustCompile(`"checkedAt":\s*\d+`)
 
+// goldenGraphRevision matches the graph revision an ask index is bound to: a
+// hash of the graph file, which changes with every byte of the graph.
+var goldenGraphRevision = regexp.MustCompile(`"graph":"[0-9a-f]{64}"`)
+
+// bindGoldenAskIndexes binds each ask index among inputs, written under root
+// with the <GRAPH> placeholder, to the graph file written beside it, as a
+// build would have.
+func bindGoldenAskIndexes(t *testing.T, root string, inputs map[string]string) {
+	t.Helper()
+	for rel := range inputs {
+		prefix, ok := strings.CutSuffix(rel, "graft/.cache/ask-index.json")
+		if !ok {
+			continue
+		}
+		wiring, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(prefix+"graft/.graph/wiring.json")))
+		if err != nil {
+			continue // an index without its graph stays unbound
+		}
+		sum := sha256.Sum256(wiring)
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		index, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("os.ReadFile(%q) error = %v, want nil", path, err)
+		}
+		bound := strings.ReplaceAll(string(index), `"graph":"<GRAPH>"`, `"graph":"`+hex.EncodeToString(sum[:])+`"`)
+		if err := os.WriteFile(path, []byte(bound), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
+		}
+	}
+}
+
 func normalizeGoldenText(value, base, repo, home, elsewhere string) string {
 	value = strings.ReplaceAll(value, elsewhere, "<ELSEWHERE>")
 	value = strings.ReplaceAll(value, repo, "<REPO>")
@@ -490,6 +526,7 @@ func normalizeGoldenText(value, base, repo, home, elsewhere string) string {
 	value = strings.ReplaceAll(value, base, "<BASE>")
 	value = goldenDuration.ReplaceAllString(value, "<DURATION>")
 	value = goldenTime.ReplaceAllString(value, "<TIME>")
+	value = goldenGraphRevision.ReplaceAllString(value, `"graph":"<GRAPH>"`)
 	return goldenCheckedAt.ReplaceAllString(value, `"checkedAt":<TIME>`)
 }
 
@@ -724,6 +761,7 @@ func TestPerCommandGoldensMatchGo(t *testing.T) {
 					for rel, content := range golden.Inputs {
 						writeCheckSource(t, repo, filepath.FromSlash(rel), materializeGolden(content, base, repo, home, elsewhere))
 					}
+					bindGoldenAskIndexes(t, repo, golden.Inputs)
 					setGoldenEnvironment(t, golden.Env, base, repo, home, elsewhere)
 					args := make([]string, len(golden.Args))
 					for i, arg := range golden.Args {
